@@ -1,3 +1,4 @@
 hermes_report.config  :: PASS  99%  task=1.1.1  2026-10-21
 hermes_report.corpus  :: PASS  97%  task=1.1.1  2026-10-21
 hermes_report.questions  :: PASS  99%  task=1.1.1  2026-10-21
+hermes_report.record  :: PASS  100%  task=1.1.2  2026-10-21
