@@ -18,6 +18,7 @@
 @mod hermes_report.record :: Run record: the schema of ``run.json``, its converters and its file I/O -> hermes_report/record.api
 @mod hermes_report.render :: Rendering of a run record as the self-contained ``report.html`` -> hermes_report/render/__init__.api
 @mod hermes_report.render.html :: HTML helpers shared by every renderer of the report, and the page itself -> hermes_report/render/html.api
+@mod hermes_report.render.question :: One question tab of the report: its evaluation, document map and every phase -> hermes_report/render/question.api
 @mod hermes_report.render.run :: The ``report.html`` of a run: a pure function of the run record -> hermes_report/render/run.api
 @mod hermes_report.runner :: Run orchestration: corpus to graded questions, written as a run folder -> hermes_report/runner.api
 @mod hermes_report.store :: The Qdrant collection of a run: create or reuse it, and read it back as stored -> hermes_report/store.api

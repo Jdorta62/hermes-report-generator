@@ -12,16 +12,21 @@ from typing import Any, Final, Literal
 __all__ = [
   "GENERATION_LABELS",
   "JUDGE_LABELS",
+  "NO_DATA",
   "RULE_LABELS",
   "RULE_TONES",
   "answer_html",
+  "card",
   "chip",
   "esc",
   "json_block",
   "page",
+  "grid",
   "section",
   "seconds",
   "status_pill",
+  "table",
+  "yes_no",
 ]
 
 RULE_LABELS: Final = {
@@ -61,6 +66,8 @@ GENERATION_LABELS: Final = {
   "no_context": "sin contexto",
   "error": "error",
 }
+
+NO_DATA: Final = '<span class="muted">—</span>'
 
 _JUDGE_TONES: Final = {"correct": "good", "partial": "meh", "incorrect": "bad"}
 _GENERATION_TONES: Final = {
@@ -103,6 +110,43 @@ def chip(anchor: str, title: str, summary: str) -> str:
   )
 
 
+def card(title: str, body: str) -> str:
+  """A titled card; ``title`` is plain text, ``body`` is HTML already escaped."""
+  return f'<div class="card"><h3>{esc(title)}</h3>{body}</div>'
+
+
+def grid(items: Sequence[tuple[str, str]]) -> str:
+  """A label/value grid; the labels are plain text, the values are HTML."""
+  return (
+    '<div class="verdict">'
+    + "".join(
+      f'<span class="k">{esc(label)}</span><span>{value}</span>'
+      for label, value in items
+    )
+    + "</div>"
+  )
+
+
+def table(headers: Sequence[tuple[str, bool]], body_rows: Sequence[str]) -> str:
+  """A table; ``headers`` are ``(text, right-aligned)``, rows are ``<tr>`` HTML."""
+  head = "".join(
+    f'<th class="num-cell">{esc(text)}</th>' if right else f"<th>{esc(text)}</th>"
+    for text, right in headers
+  )
+  return f"<table><tr>{head}</tr>{''.join(body_rows)}</table>"
+
+
+def yes_no(value: bool | None) -> str:
+  """A green ``sí``, a red ``no`` or a dash for ``None``."""
+  if value is None:
+    return NO_DATA
+  return (
+    '<span class="status good">sí</span>'
+    if value
+    else '<span class="status bad">no</span>'
+  )
+
+
 def status_pill(
   code: str | None, kind: Literal["rule", "judge", "generation"] = "rule"
 ) -> str:
@@ -113,7 +157,7 @@ def status_pill(
   keeps its own text and the neutral tone.
   """
   if code is None:
-    return '<span class="muted">—</span>'
+    return NO_DATA
   labels, tones = {
     "rule": (RULE_LABELS, RULE_TONES),
     "judge": (JUDGE_LABELS, _JUDGE_TONES),

@@ -182,3 +182,4 @@ th.num-cell { text-align: right; }
 pre.json { font-size: 12px; }
 details.raw-reply { margin-top: 8px; }
 .panel > .sc-head { margin-bottom: 12px; }
+.maprow.expected .mapdoc b::before, .exp-mark::before { content: "◆ "; color: var(--ink); }

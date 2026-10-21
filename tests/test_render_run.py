@@ -1247,3 +1247,1749 @@ def test_no_warning_is_printed_while_rendering(record: RunRecord) -> None:
   with warnings.catch_warnings():
     warnings.simplefilter("error")
     render_run(record)
+
+
+# ------------------------------------------------------------------ question tabs: phases
+#
+# The tests below read the phase sections of a question tab. Records come from
+# real offline runs (module fixtures) or are built by hand with the ``pt`` /
+# ``rf`` / ``pc`` / ``cx`` helpers, so that every branch of the renderer is
+# reached from data alone, with no service involved.
+
+
+class FakeCounter:
+  """A token counter that counts words and never touches the network."""
+
+  name = "fake-words"
+
+  def count(self, text: str) -> int:
+    return len(text.split())
+
+
+FAKE = FakeCounter()
+
+
+def offline_record(
+  tmp_path_factory: pytest.TempPathFactory,
+  *,
+  threshold: float | None = None,
+  budget: int | None = None,
+) -> RunRecord:
+  """A whole offline run over the sample project with another threshold / budget."""
+  project = tmp_path_factory.mktemp("variant") / "proj"
+  shutil.copytree(DATA, project)
+  if threshold is not None:
+    path = project / "run.toml"
+    text = path.read_text(encoding="utf-8")
+    assert "score_threshold = 0.3" in text
+    path.write_text(
+      text.replace("score_threshold = 0.3", f"score_threshold = {threshold}"),
+      encoding="utf-8",
+    )
+  config = load_config(
+    project / "run.toml", Overrides(out=project / "out", budget=budget)
+  )
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore", UserWarning)
+    return runner.run(config, progress=lambda line: None).record
+
+
+@pytest.fixture(scope="module")
+def budget_record(tmp_path_factory: pytest.TempPathFactory) -> RunRecord:
+  """Every chunk retrieved and a 60-token budget: q01 drops chunks."""
+  return offline_record(tmp_path_factory, threshold=0.0, budget=60)
+
+
+@pytest.fixture(scope="module")
+def empty_record(tmp_path_factory: pytest.TempPathFactory) -> RunRecord:
+  """A threshold nothing reaches: every retrieval is empty."""
+  return offline_record(tmp_path_factory, threshold=0.99)
+
+
+@pytest.fixture(scope="module")
+def failed_budget_record(tmp_path_factory: pytest.TempPathFactory) -> RunRecord:
+  """A 30-token budget: q01 fails with ContextBudgetError after its steps."""
+  return offline_record(tmp_path_factory, threshold=0.0, budget=30)
+
+
+def phase_ids(panel: str) -> list[str]:
+  """The anchor suffixes of the phase sections of a panel, in page order."""
+  found = re.findall(r'<details class="phase" id="q-[^"]*?-([a-z0-9]+)" open>', panel)
+  return found
+
+
+def phase(panel: str, suffix: str) -> str:
+  """The HTML of the phase section ``suffix`` (up to the next phase)."""
+  match = re.search(rf'<details class="phase" id="q-[^"]*?-{suffix}" open>', panel)
+  assert match, f"no phase {suffix} in {phase_ids(panel)}"
+  start = match.end()
+  after = panel.find('<details class="phase"', start)
+  return panel[start : after if after != -1 else len(panel)]
+
+
+def flow_targets(panel: str) -> list[str]:
+  flow = re.search(r'<div class="flow">(.*?)</div>', panel, re.S)
+  return re.findall(r'href="#([^"]*)"', flow.group(1)) if flow else []
+
+
+def text_of(fragment: str) -> str:
+  return html_lib.unescape(re.sub(r"<[^>]+>", " ", fragment))
+
+
+def pt(
+  chunk_id: str,
+  source: str | None,
+  index: int | None,
+  heading: list[str] | None = None,
+  text: str = "texto del chunk",
+) -> Any:
+  payload: dict[str, Any] = {"text": text}
+  if source is not None:
+    payload["source"] = source
+  if index is not None:
+    payload["chunk_index"] = index
+  if heading is not None:
+    payload["heading_path"] = heading
+  return {"id": chunk_id, "payload": payload, "vector": None}
+
+
+def rf(
+  chunk_id: str,
+  score: float | None = 0.5,
+  origin: tuple[str, ...] = (),
+  source: str | None = None,
+  index: int | None = None,
+) -> Any:
+  return {
+    "chunk_id": chunk_id,
+    "collection_name": "coll",
+    "source": source,
+    "doc_id": None,
+    "chunk_index": index,
+    "score": score,
+    "origin": list(origin),
+  }
+
+
+def pc(text: str, *refs: Any, transforms: tuple[str, ...] = ()) -> Any:
+  return {"text": text, "transforms": list(transforms), "chunks": list(refs)}
+
+
+def cx(*pieces: Any, dropped: tuple[str, ...] = ()) -> Any:
+  return {
+    "pieces": list(pieces),
+    "enrichments": [],
+    "dropped_chunk_ids": list(dropped),
+    "query_id": None,
+  }
+
+
+def rc(
+  chunk_id: str,
+  source: str | None = None,
+  index: int | None = None,
+  *,
+  score: float = 0.5,
+  vector: float | None = None,
+  text: str = "texto",
+  metadata: dict[str, Any] | None = None,
+) -> Any:
+  meta: dict[str, Any] = dict(metadata or {})
+  if source is not None:
+    meta["source"] = source
+  if index is not None:
+    meta["chunk_index"] = index
+  return {
+    "chunk_id": chunk_id,
+    "text": text,
+    "score": score,
+    "vector_score": vector,
+    "collection_name": "coll",
+    "metadata": meta,
+  }
+
+
+def step(name: str, before: Any, after: Any, reads: list[Any] | None = None) -> Any:
+  return {
+    "name": name,
+    "phase": "EXPAND",
+    "seconds": 0.002,
+    "before": before,
+    "after": after,
+    "reads": reads or [],
+  }
+
+
+def hand_record(
+  record: RunRecord,
+  *,
+  points: list[Any],
+  chunks: list[Any] | None = None,
+  steps: list[Any] | None = None,
+  final: Any = None,
+  budget: dict[str, Any] | None = None,
+  documents: list[str] | None = None,
+  citations: list[Any] | None = None,
+  result_dropped: list[str] | None = None,
+) -> RunRecord:
+  """Replace the phases of the first question with hand-built ones."""
+  item = record["questions"][0]
+  record["points"] = points
+  if documents is not None:
+    item["spec"]["documents"] = documents
+  assert item["retrieval"] and item["enrich"]
+  assert item["generation"] and item["generation"]["result"]
+  item["retrieval"]["chunks"] = chunks or []
+  item["enrich"]["steps"] = steps or []
+  item["enrich"]["context"] = final
+  if budget is not None:
+    item["enrich"]["budget"] = budget
+  result = item["generation"]["result"]
+  if citations is not None:
+    result["citations"] = citations
+  if result_dropped is not None:
+    result["dropped_chunk_ids"] = result_dropped
+  return record
+
+
+def q01(record: RunRecord, counter: Any = FAKE) -> str:
+  return panel_of(render_run(record, token_counter=counter), "q-q01")
+
+
+# ---- every section on the in-memory run
+
+
+def test_real_run_has_every_section_in_pipeline_order(report: str) -> None:
+  panel = panel_of(report, "q-q01")
+  assert phase_ids(panel) == [
+    "in",
+    "seed",
+    "e1",
+    "e2",
+    "e3",
+    "budget",
+    "prompt",
+    "llm",
+    "out",
+    "judge",
+  ]
+
+
+def test_flow_has_one_chip_per_section_each_linking_to_its_section(report: str) -> None:
+  for key in ("q-q01", "q-q02", "q-q11"):
+    panel = panel_of(report, key)
+    ids = re.findall(r'<details class="phase" id="([^"]*)"', panel)
+    assert flow_targets(panel) == ids
+    assert len(ids) == len(set(ids))
+    assert all(i.startswith(f"{key}-") for i in ids)
+
+
+def test_section_anchors_are_unique_across_the_whole_page(report: str) -> None:
+  ids = re.findall(r'\bid="([^"]*)"', report)
+  assert len(ids) == len(set(ids))
+
+
+def test_flow_chips_carry_the_step_names_and_summaries(report: str) -> None:
+  panel = panel_of(report, "q-q01")
+  flow = re.search(r'<div class="flow">(.*?)</div>', panel, re.S)
+  assert flow
+  titles = re.findall(r"<b>(.*?)</b>", flow.group(1))
+  assert titles == [
+    "Retrieval",
+    "Semilla",
+    "neighbors",
+    "merge",
+    "doc_order",
+    "Presupuesto",
+    "Prompt",
+    "LLM",
+    "Resultado",
+    "Juez",
+  ]
+
+
+def test_section_step_marks_and_titles(report: str) -> None:
+  panel = panel_of(report, "q-q01")
+  marks = re.findall(
+    r'<span class="step">(.*?)</span><span class="ph-title">(.*?)</span>', panel
+  )
+  assert marks == [
+    ("0", "Entrada"),
+    ("S", "Semilla del contexto"),
+    ("1", "Enriquecedor: neighbors"),
+    ("2", "Enriquecedor: merge"),
+    ("3", "Enriquecedor: doc_order"),
+    ("B", "Ajuste al presupuesto"),
+    ("P", "Prompt enviado"),
+    ("L", "LLM"),
+    ("R", "GenerationResult"),
+    ("J", "Juez"),
+  ]
+
+
+def test_header_meta_names_the_token_counter(record: RunRecord) -> None:
+  text = render_run(record, token_counter=FAKE)
+  assert "Tokens: <b>fake-words</b>" in text
+  assert "Tokens: <b>tiktoken</b>" in render_run(record)
+
+
+def test_the_token_counter_is_created_once_per_render(
+  record: RunRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  made: list[FakeCounter] = []
+
+  def factory() -> FakeCounter:
+    made.append(FakeCounter())
+    return made[-1]
+
+  monkeypatch.setattr("hermes_report.render.run.default_token_counter", factory)
+  render_run(record)
+  assert len(made) == 1  # three questions, one counter
+
+
+def test_an_explicit_counter_means_default_is_never_built(
+  record: RunRecord, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  def boom() -> None:
+    raise AssertionError("default_token_counter must not be called")
+
+  monkeypatch.setattr("hermes_report.render.run.default_token_counter", boom)
+  render_run(record, token_counter=FAKE)
+
+
+def test_token_numbers_come_from_the_counter(record: RunRecord) -> None:
+  class Ten:
+    name = "ten"
+
+    def count(self, text: str) -> int:
+      return 10
+
+  panel = q01(record, Ten())
+  budget = phase(panel, "budget")
+  final = record["questions"][0]["enrich"]["context"]  # type: ignore[index]
+  assert final
+  assert f"{10 * len(final['pieces'])} tok" in budget
+  assert "tok" in phase(panel, "seed")
+
+
+# ---- 0 Entrada
+
+
+def test_entrada_shows_the_question_queries_and_retrieved_chunks_in_order(
+  report: str, real_record: RunRecord
+) -> None:
+  item = real_record["questions"][0]
+  assert item["retrieval"]
+  body = phase(panel_of(report, "q-q01"), "in")
+  assert (
+    f'<div class="question">{html_lib.escape(item["spec"]["question"])}</div>' in body
+  )
+  assert "Consultas buscadas" in body
+  queries = item["retrieval"]["queries"]
+  for query in queries:
+    assert html_lib.escape(query["text"]) in body
+  rows = rows_of(body)
+  chunks = item["retrieval"]["chunks"]
+  assert len(rows) == len(queries) + len(chunks)
+  chunk_rows = rows[len(queries) :]
+  for number, (row, chunk) in enumerate(zip(chunk_rows, chunks, strict=True), 1):
+    meta = chunk["metadata"]
+    assert row.startswith(f"<tr><td>{number}</td>")
+    assert (
+      f"<code>{html_lib.escape(meta['source'])}#{meta['chunk_index']}</code>" in row
+    )
+    assert " › ".join(meta["heading_path"]) in html_lib.unescape(row)
+
+
+def test_entrada_chunk_scores_and_vector_scores(
+  report: str, real_record: RunRecord
+) -> None:
+  body = phase(panel_of(report, "q-q01"), "in")
+  assert "<th>vector</th>" in body
+  chunk = real_record["questions"][0]["retrieval"]["chunks"][0]  # type: ignore[index]
+  assert chunk["vector_score"] is not None
+  assert f"<td>{chunk['score']:.4f}</td>" in body  # RRF scores are below 0.1
+  assert f"<td>{chunk['vector_score']:.2f}</td>" in body
+
+
+def test_entrada_searched_queries_show_their_technique_chain(
+  record: RunRecord,
+) -> None:
+  item = record["questions"][0]
+  assert item["retrieval"]
+  item["retrieval"]["queries"] = [
+    {"text": "primera", "chain": ["multi_query", "hyde"]},
+    {"text": "segunda", "chain": []},
+  ]
+  body = phase(q01(record), "in")
+  rows = [r for r in rows_of(body) if "primera" in r or "segunda" in r]
+  assert len(rows) == 2
+  assert '<span class="tag">multi_query</span> <span class="tag">hyde</span>' in rows[0]
+  assert '<span class="muted">—</span>' in rows[1]
+
+
+def test_entrada_with_no_queries_says_so(record: RunRecord) -> None:
+  item = record["questions"][0]
+  assert item["retrieval"]
+  item["retrieval"]["queries"] = []
+  assert "Sin consultas." in phase(q01(record), "in")
+
+
+def test_entrada_label_is_the_chunk_id_without_a_source_and_place_falls_back(
+  record: RunRecord,
+) -> None:
+  chunks = [
+    rc("c-with", "doc.md", 3, metadata={"heading_path": ["A", "B"]}),
+    rc("c-nosource", None, 4, metadata={"char_start": 10, "char_end": 99}),
+    rc("c-bare", None, None),
+    rc("c-sourceonly", "doc.md", None, metadata={"heading_path": []}),
+  ]
+  body = phase(q01(hand_record(record, points=[], chunks=chunks)), "in")
+  rows = rows_of(body)[1:]  # the first row is the query
+  assert "<code>doc.md#3</code></td><td>A › B</td>" in rows[0]
+  assert "<code>c-nosource</code></td><td>caracteres 10–99</td>" in rows[1]
+  assert "<code>c-bare</code></td><td>—</td>" in rows[2]
+  assert "<code>doc.md</code>" in rows[3]  # no index: just the source
+
+
+@pytest.mark.parametrize(
+  ("size", "ellipsis"),
+  [(0, False), (139, False), (140, False), (141, True), (500, True)],
+)
+def test_entrada_snippet_is_cut_at_140_characters(
+  record: RunRecord, size: int, ellipsis: bool
+) -> None:
+  text = "ñ" * size
+  body = phase(q01(hand_record(record, points=[], chunks=[rc("c", text=text)])), "in")
+  snippet = re.search(r'<td class="snippet">(.*?)</td>', body, re.S)
+  assert snippet
+  shown = html_lib.unescape(snippet.group(1))
+  assert shown == "ñ" * min(size, 140) + ("…" if ellipsis else "")
+
+
+def test_entrada_snippet_strips_surrounding_whitespace_before_cutting(
+  record: RunRecord,
+) -> None:
+  chunk = rc("c", text="\n\n  " + "a" * 140 + "  \n")
+  body = phase(q01(hand_record(record, points=[], chunks=[chunk])), "in")
+  assert f'<td class="snippet">{"a" * 140}</td>' in body
+
+
+def test_entrada_vector_column_is_left_out_when_no_chunk_has_a_vector_score(
+  record: RunRecord,
+) -> None:
+  chunks = [rc("a", "d.md", 0, vector=None), rc("b", "d.md", 1, vector=None)]
+  assert "<th>vector</th>" not in phase(
+    q01(hand_record(record, points=[], chunks=chunks)), "in"
+  )
+
+
+def test_entrada_vector_column_shows_a_dash_for_a_chunk_without_one(
+  record: RunRecord,
+) -> None:
+  chunks = [rc("a", "d.md", 0, vector=0.5), rc("b", "d.md", 1, vector=None)]
+  body = phase(q01(hand_record(record, points=[], chunks=chunks)), "in")
+  assert "<th>vector</th>" in body
+  rows = rows_of(body)[1:]
+  assert "<td>0.50</td>" in rows[0]
+  assert '<td><span class="muted">—</span></td>' in rows[1]
+
+
+@pytest.mark.parametrize(
+  ("score", "shown"),
+  [(0.5, "0.50"), (0.1, "0.10"), (0.0999, "0.0999"), (0.0, "0.0000"), (-0.25, "-0.25")],
+)
+def test_entrada_score_format(record: RunRecord, score: float, shown: str) -> None:
+  body = phase(q01(hand_record(record, points=[], chunks=[rc("a", score=score)])), "in")
+  assert f"<td>{shown}</td>" in body
+
+
+# ---- empty retrieval
+
+
+def test_empty_retrieval_has_input_and_empty_seed_and_no_enrichment_sections(
+  empty_record: RunRecord,
+) -> None:
+  panel = panel_of(render_run(empty_record), "q-q01")
+  assert phase_ids(panel) == ["in", "seed", "llm", "out", "judge"]
+  assert "Lista vacía." in phase(panel, "in")
+  seed = phase(panel, "seed")
+  assert "Sin chunks no hay semilla" in seed
+  assert '<span class="ph-sum">vacía</span>' in seed
+  assert flow_targets(panel)[1].endswith("-seed")
+
+
+def test_empty_retrieval_never_calls_the_llm_and_says_so(
+  empty_record: RunRecord,
+) -> None:
+  panel = panel_of(render_run(empty_record), "q-q01")
+  llm = phase(panel, "llm")
+  assert "sin llamar al LLM" in llm
+  assert '<span class="ph-sum">no se llama</span>' in panel
+  assert '<div class="error">' not in llm
+
+
+def test_empty_retrieval_has_no_budget_and_no_prompt_section(
+  empty_record: RunRecord,
+) -> None:
+  panel = panel_of(render_run(empty_record), "q-q01")
+  assert "-budget" not in panel
+  assert "-prompt" not in panel
+  assert "Mapa de documentos" in panel  # the expected document still shows
+
+
+def test_empty_retrieval_document_map_shows_the_expected_row_unused(
+  empty_record: RunRecord,
+) -> None:
+  rows = doc_map(panel_of(render_run(empty_record), "q-q01"))
+  assert list(rows) == ["parte-1/capitulo-01.md"]
+  assert rows["parte-1/capitulo-01.md"]["expected"] is True
+  assert {c["state"] for c in rows["parte-1/capitulo-01.md"]["cells"]} == {"unused"}
+
+
+def test_empty_retrieval_result_section_has_no_citations(
+  empty_record: RunRecord,
+) -> None:
+  out = phase(panel_of(render_run(empty_record), "q-q01"), "out")
+  assert "Sin citas." in out
+  assert h.status_pill("no_context", "generation") in out
+
+
+# ---- S Semilla
+
+
+def test_seed_is_the_before_of_the_first_step(
+  report: str, real_record: RunRecord
+) -> None:
+  enrich = real_record["questions"][0]["enrich"]
+  assert enrich
+  seed = enrich["steps"][0]["before"]
+  body = phase(panel_of(report, "q-q01"), "seed")
+  assert body.count('<div class="piece">') == len(seed["pieces"])
+  for piece in seed["pieces"]:
+    assert html_lib.escape(piece["text"]) in body
+
+
+def test_seed_is_not_the_after_of_the_last_step(record: RunRecord) -> None:
+  seed = cx(pc("seed words only", rf("s1", 0.9, source="d.md", index=0)))
+  grown = cx(
+    pc("seed words only", rf("s1", 0.9, source="d.md", index=0)),
+    pc("neighbour text", rf("s2", None, ("neighbors",), source="d.md", index=1)),
+  )
+  record = hand_record(
+    record,
+    points=[pt("s1", "d.md", 0), pt("s2", "d.md", 1)],
+    chunks=[rc("s1", "d.md", 0)],
+    steps=[step("neighbors", seed, grown)],
+    final=grown,
+  )
+  body = phase(q01(record), "seed")
+  assert "seed words only" in body
+  assert "neighbour text" not in body
+  assert body.count('<div class="piece">') == 1
+
+
+# ---- E1…En
+
+
+def test_step_section_shows_reads_pieces_and_marks_new_chunks(
+  record: RunRecord,
+) -> None:
+  before = cx(pc("uno dos", rf("a", 0.9, source="d.md", index=1)))
+  after = cx(
+    pc(
+      "cero uno dos tres",
+      rf("z", None, ("neighbors",), "d.md", 0),
+      rf("a", 0.9),
+      rf("b", None, ("neighbors",), "d.md", 2),
+    )
+  )
+  reads = [
+    {
+      "ranges": [
+        {"collection_name": "coll", "doc_id": "d" * 40, "first": 0, "last": 0},
+        {"collection_name": "coll", "doc_id": "d" * 40, "first": 2, "last": 2},
+      ],
+      "returned": ["b", "z"],
+      "seconds": 0.0123,
+    }
+  ]
+  record = hand_record(
+    record,
+    points=[pt("z", "d.md", 0), pt("a", "d.md", 1), pt("b", "d.md", 2)],
+    chunks=[rc("a", "d.md", 1)],
+    steps=[step("neighbors", before, after, reads)],
+    final=after,
+  )
+  body = phase(q01(record), "e1")
+  assert "Lecturas a Qdrant" in body
+  assert f"coll / {'d' * 16} [0–0], coll / {'d' * 16} [2–2]" in body
+  assert "Recibe</span> 2 chunk(s)" in body
+  # returned chunks are shown by chunk index, not in the order of the reply
+  assert body.index("<code>d.md#0</code>") < body.index("<code>d.md#2</code>")
+  assert "12.3 ms" in body
+  assert body.count('class="pill added new"') == 2  # z and b are new
+  assert 'class="pill orig"' in body  # a was already there
+  assert "+2 chunks" in body
+  assert '<span class="ph-sum">+2 chunks</span>' in body
+
+
+def test_step_summary_variants(record: RunRecord) -> None:
+  a, b = rf("a", 0.9, source="d.md", index=0), rf("b", 0.8, source="d.md", index=1)
+  steps = [
+    step("grow", cx(pc("a", a)), cx(pc("a", a), pc("b", b))),  # +1 chunk, 1->2
+    step("merge", cx(pc("a", a), pc("b", b)), cx(pc("a b", a, b))),  # 2->1
+    step("swap", cx(pc("a b", a, b)), cx(pc("a b", b, a))),  # reorder
+    step("noop", cx(pc("a b", a, b)), cx(pc("a b", a, b))),  # nothing
+  ]
+  record = hand_record(
+    record,
+    points=[pt("a", "d.md", 0), pt("b", "d.md", 1)],
+    chunks=[rc("a", "d.md", 0)],
+    steps=steps,
+    final=steps[-1]["after"],
+  )
+  panel = q01(record)
+  sums = dict(
+    re.findall(r'id="q-q01-(e\d)" open><summary>.*?ph-sum">(.*?)</span>', panel)
+  )
+  assert sums["e1"] == "+1 chunks, 1→2 piezas"
+  assert sums["e2"] == "2→1 piezas"
+  assert sums["e3"] == "reordena"
+  assert sums["e4"] == "sin cambios"
+  assert "No consulta Qdrant." in phase(panel, "e4")
+
+
+def test_step_reads_of_a_chunk_unknown_to_the_record_fall_back_to_its_id(
+  record: RunRecord,
+) -> None:
+  ctx = cx(pc("t", rf("lonely", 0.5)))
+  reads = [{"ranges": [], "returned": ["ghost"], "seconds": 0.0}]
+  record = hand_record(
+    record, points=[], chunks=[], steps=[step("n", ctx, ctx, reads)], final=ctx
+  )
+  body = phase(q01(record), "e1")
+  assert "<code>ghost</code>" in body
+  assert "<b>lonely</b>" in body  # a ref with no point is named by its id
+
+
+def test_step_piece_with_no_chunks_does_not_crash(record: RunRecord) -> None:
+  ctx = cx(pc("orphan text"))
+  record = hand_record(record, points=[], steps=[step("n", ctx, ctx)], final=ctx)
+  body = phase(q01(record), "e1")
+  assert "orphan text" in body
+  assert "1. ?" in body
+
+
+# ---- B Presupuesto
+
+
+def test_budget_without_drops_says_everything_fits(report: str) -> None:
+  body = phase(panel_of(report, "q-q01"), "budget")
+  assert "Todo cabe: no se descarta nada." in body
+  assert 'class="dropped"' not in body
+  assert "<h4>EnrichedContext (contrato de hermes-core)</h4>" in body
+  assert "3000 tok · 20 chunks" in body
+
+
+def test_budget_drop_with_a_tiny_budget(budget_record: RunRecord) -> None:
+  counter = default_counter()
+  item = budget_record["questions"][0]
+  assert item["enrich"] and item["enrich"]["context"]
+  final = item["enrich"]["context"]
+  last = item["enrich"]["steps"][-1]["after"]
+  dropped = final["dropped_chunk_ids"]
+  assert len(dropped) == 2  # the premise of this test
+
+  panel = panel_of(render_run(budget_record), "q-q01")
+  body = phase(panel, "budget")
+  before_tok = sum(counter.count(p["text"]) for p in last["pieces"])
+  after_tok = sum(counter.count(p["text"]) for p in final["pieces"])
+  assert before_tok > 60 >= after_tok  # something really had to go
+  assert "60 tok · 20 chunks" in body
+  assert f"Antes</span> {before_tok} tok" in body
+  assert f"Después</span> {after_tok} tok" in body
+  assert f'<span class="ph-sum">{after_tok}/60 tok · −2 chunks</span>' in panel
+  # the dropped chunks, in the order the record gives them, each marked gone
+  items = re.findall(r"<li>(.*?)</li>", body, re.S)
+  assert len(items) == 2
+  for entry, chunk_id in zip(items, dropped, strict=True):
+    assert 'class="pill orig gone"' in entry or 'class="pill added gone"' in entry
+    assert chunk_id in entry  # in the title attribute
+
+
+def test_budget_dropped_chunks_keep_the_record_order(record: RunRecord) -> None:
+  pieces = [pc(f"w{n}", rf(f"c{n}", 0.5, source="d.md", index=n)) for n in range(4)]
+  final = cx(pieces[0], dropped=("c3", "c1", "c2"))
+  record = hand_record(
+    record,
+    points=[pt(f"c{n}", "d.md", n) for n in range(4)],
+    chunks=[rc("c0", "d.md", 0)],
+    steps=[step("n", cx(*pieces), cx(*pieces))],
+    final=final,
+    budget={"max_context_tokens": 10, "max_chunks": 3},
+  )
+  body = phase(q01(record), "budget")
+  names = re.findall(r"<li>.*?<b>(.*?)</b>", body, re.S)
+  assert names == ["d.md#3", "d.md#1", "d.md#2"]
+  assert "Antes</span> 4 tok · 4 chunks" in body
+  assert "Después</span> 1 tok · 1 chunks" in body
+
+
+def test_budget_dropped_id_missing_from_the_last_step_still_listed(
+  record: RunRecord,
+) -> None:
+  a = pc("a", rf("a", 0.5, source="d.md", index=0))
+  record = hand_record(
+    record,
+    points=[pt("a", "d.md", 0)],
+    chunks=[rc("a", "d.md", 0)],
+    steps=[step("n", cx(a), cx(a))],
+    final=cx(a, dropped=("ghost-id",)),
+  )
+  body = phase(q01(record), "budget")
+  assert '<li><span class="pill gone"><b>ghost-id</b></span></li>' in body
+
+
+@pytest.mark.parametrize(
+  "budget",
+  [{}, {"max_context_tokens": None, "max_chunks": None}, {"max_context_tokens": 0}],
+)
+def test_budget_without_limits_is_unlimited_and_has_an_empty_bar(
+  record: RunRecord, budget: dict[str, Any]
+) -> None:
+  a = pc("uno dos tres", rf("a", 0.5, source="d.md", index=0))
+  record = hand_record(
+    record,
+    points=[pt("a", "d.md", 0)],
+    chunks=[rc("a", "d.md", 0)],
+    steps=[step("n", cx(a), cx(a))],
+    final=cx(a),
+    budget=budget,
+  )
+  panel = q01(record)
+  body = phase(panel, "budget")
+  assert "sin límite tok · sin límite chunks" in body
+  assert 'style="width:0.0%"' in body
+  assert '<span class="ph-sum">3 tok</span>' in panel
+
+
+def test_budget_bar_never_overflows_when_over_the_limit(record: RunRecord) -> None:
+  a = pc("uno dos tres cuatro cinco", rf("a", 0.5, source="d.md", index=0))
+  record = hand_record(
+    record,
+    points=[pt("a", "d.md", 0)],
+    chunks=[rc("a", "d.md", 0)],
+    steps=[step("n", cx(a), cx(a))],
+    final=cx(a),
+    budget={"max_context_tokens": 2, "max_chunks": 1},
+  )
+  widths = [
+    float(w) for w in re.findall(r"width:([\d.]+)%", phase(q01(record), "budget"))
+  ]
+  assert widths == [100.0, 100.0]
+
+
+def test_budget_final_context_shows_texts_open_for_small_contexts_only(
+  record: RunRecord,
+) -> None:
+  def build(count: int) -> str:
+    pieces = [
+      pc(f"t{n}", rf(f"c{n}", 0.5, source="d.md", index=n)) for n in range(count)
+    ]
+    ctx = cx(*pieces)
+    rec = hand_record(
+      copy.deepcopy(record),
+      points=[pt(f"c{n}", "d.md", n) for n in range(count)],
+      chunks=[rc("c0", "d.md", 0)],
+      steps=[step("n", ctx, ctx)],
+      final=ctx,
+    )
+    body = phase(q01(rec), "budget")
+    return body[body.index("EnrichedContext") :]
+
+  assert build(4).count("<details open>") == 4
+  assert build(5).count("<details open>") == 0
+  assert build(5).count("<details>") == 5
+
+
+def test_a_run_that_fails_the_budget_shows_its_steps_but_no_budget_section(
+  failed_budget_record: RunRecord,
+) -> None:
+  text = render_run(failed_budget_record)
+  panel = panel_of(text, "q-q01")
+  assert phase_ids(panel)[:5] == ["in", "seed", "e1", "e2", "e3"]
+  assert "budget" not in phase_ids(panel)
+  assert not {"prompt", "llm", "out"} & set(phase_ids(panel))
+  assert '<div class="error">ContextBudgetError' in panel
+  assert h.status_pill("error", "generation") in panel
+
+
+# ---- P Prompt
+
+
+def test_prompt_shows_every_message_with_its_role(
+  report: str, real_record: RunRecord
+) -> None:
+  result = real_record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result and result["prompt"]
+  body = phase(panel_of(report, "q-q01"), "prompt")
+  assert body.count('<div class="msg ') == len(result["prompt"])
+  for message in result["prompt"]:
+    assert f'<div class="msg {message["role"]}">' in body
+    assert html_lib.escape(message["content"]) in body
+  assert f"{len(result['prompt'])} mensajes" in report
+
+
+@pytest.mark.parametrize("prompt", [None, []])
+def test_no_prompt_means_no_prompt_section_and_no_chip(
+  record: RunRecord, prompt: list[Any] | None
+) -> None:
+  result = record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result
+  result["prompt"] = prompt
+  panel = q01(record)
+  assert "prompt" not in phase_ids(panel)
+  assert not [t for t in flow_targets(panel) if t.endswith("-prompt")]
+
+
+def test_result_without_a_prompt_key_at_all(record: RunRecord) -> None:
+  result = record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result
+  del result["prompt"]
+  assert "prompt" not in phase_ids(q01(record))
+
+
+# ---- L LLM
+
+
+def llm_call(
+  *,
+  text: str | None = "respuesta",
+  error: str | None = None,
+  seconds: float = 0.25,
+  params: dict[str, Any] | None = None,
+  model: str | None = "m1",
+  prompt_tokens: int | None = 11,
+  completion_tokens: int | None = 7,
+) -> Any:
+  reply = (
+    None
+    if text is None
+    else {
+      "text": text,
+      "model": model,
+      "prompt_tokens": prompt_tokens,
+      "completion_tokens": completion_tokens,
+    }
+  )
+  return {
+    "messages": [{"role": "user", "content": "hola"}],
+    "params": params if params is not None else {"temperature": 0.0, "seed": 42},
+    "reply": reply,
+    "error": error,
+    "seconds": seconds,
+  }
+
+
+def test_llm_section_of_the_real_run(report: str, real_record: RunRecord) -> None:
+  generation = real_record["questions"][0]["generation"]
+  assert generation
+  call = generation["llm_calls"][0]
+  body = phase(panel_of(report, "q-q01"), "llm")
+  assert call["reply"]
+  assert f"Modelo</span> {html_lib.escape(call['reply']['model'])}" in body
+  assert html_lib.escape(call["reply"]["text"]) in body
+  assert f"{call['seconds']:.2f} s" in body
+  assert "Llamada" not in body  # one call: no per-call heading
+
+
+def test_llm_section_lists_every_call_not_only_the_last(record: RunRecord) -> None:
+  generation = record["questions"][0]["generation"]
+  assert generation
+  generation["llm_calls"] = [
+    llm_call(text="primera respuesta", seconds=1.0),
+    llm_call(
+      text="segunda respuesta", seconds=2.0, params={"temperature": 0.7, "top_p": None}
+    ),
+    llm_call(text=None, error="boom: connection reset", seconds=0.5),
+  ]
+  panel = q01(record)
+  body = phase(panel, "llm")
+  assert (
+    "Llamada 1 de 3" in body and "Llamada 2 de 3" in body and "Llamada 3 de 3" in body
+  )
+  assert "primera respuesta" in body and "segunda respuesta" in body
+  assert '<div class="error">boom: connection reset</div>' in body
+  assert "temperature=0.7" in body
+  assert "top_p" not in body  # None parameters are not shown
+  assert "<code>temperature=0.0, seed=42</code>" in body
+  assert '<span class="ph-sum">3 llamadas · 3.50 s · con error</span>' in panel
+
+
+def test_llm_call_without_reply_shows_the_error_box_and_summary(
+  record: RunRecord,
+) -> None:
+  generation = record["questions"][0]["generation"]
+  assert generation
+  generation["llm_calls"] = [llm_call(text=None, error="timeout")]
+  panel = q01(record)
+  assert '<div class="error">timeout</div>' in phase(panel, "llm")
+  assert '<span class="ph-sum">error</span>' in panel.split('id="q-q01-llm"')[1]
+
+
+def test_llm_call_with_missing_model_and_tokens_shows_placeholders(
+  record: RunRecord,
+) -> None:
+  generation = record["questions"][0]["generation"]
+  assert generation
+  generation["llm_calls"] = [
+    llm_call(model=None, prompt_tokens=None, completion_tokens=None)
+  ]
+  body = phase(q01(record), "llm")
+  assert "Modelo</span> ?" in body
+  assert "prompt — · respuesta —" in body
+
+
+@pytest.mark.xfail(
+  strict=True,
+  reason="`or` treats a real count of 0 as missing: completion_tokens=0 shows a dash",
+)
+def test_llm_zero_token_counts_are_real_numbers_not_missing(record: RunRecord) -> None:
+  generation = record["questions"][0]["generation"]
+  assert generation
+  generation["llm_calls"] = [llm_call(prompt_tokens=0, completion_tokens=0)]
+  body = phase(q01(record), "llm")
+  assert "prompt 0 · respuesta 0" in body
+
+
+def test_llm_section_of_a_generation_that_failed_before_any_call(
+  record: RunRecord,
+) -> None:
+  item = record["questions"][0]
+  assert item["generation"]
+  item["generation"]["llm_calls"] = []
+  item["generation"]["result"] = None
+  item["error"] = "RuntimeError: prompt build failed"
+  panel = q01(record)
+  assert '<div class="error">RuntimeError: prompt build failed</div>' in phase(
+    panel, "llm"
+  )
+  assert not {"prompt", "out"} & set(phase_ids(panel))
+
+
+def test_llm_section_with_an_empty_raw_reply(record: RunRecord) -> None:
+  generation = record["questions"][0]["generation"]
+  assert generation
+  generation["llm_calls"] = [llm_call(text="")]
+  assert '<pre class="text raw"></pre>' in phase(q01(record), "llm")
+
+
+# ---- R Resultado
+
+
+def test_result_section_fields_and_json(report: str, real_record: RunRecord) -> None:
+  result = real_record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result
+  body = phase(panel_of(report, "q-q01"), "out")
+  assert '<div class="answer">' in body
+  assert h.status_pill(result["status"], "generation") in body
+  assert f"Estrategia</span> {result['strategy']}" in body
+  assert f"Formato</span> {result['response_format']}" in body
+  assert f"{len(result['sources'])} piezas" in body
+  assert "Enriquecimientos</span> " + " → ".join(result["enrichments"]) in body
+  block = re.search(r'<pre class="text json">(.*?)</pre>', body, re.S)
+  assert block
+  assert "<details><summary>GenerationResult completo (JSON)</summary>" in body
+  assert json.loads(html_lib.unescape(block.group(1))) == result
+
+
+def test_result_citations_table_maps_numbers_to_chunk_labels_and_source(
+  record: RunRecord,
+) -> None:
+  result = record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result
+  result["citations"] = [
+    {"number": 1, "chunk_ids": ["a", "b"]},
+    {"number": 2, "chunk_ids": ["c"]},
+    {"number": 3, "chunk_ids": ["nobody"]},
+  ]
+  result["sources"] = [
+    {
+      "number": 1,
+      "chunks": [
+        {"chunk_id": "a", "source": "x.md"},
+        {"chunk_id": "b", "source": "x.md"},
+      ],
+    },
+    {"number": 2, "chunks": [{"chunk_id": "c", "source": "y.md"}]},
+  ]
+  record["points"] = [pt("a", "x.md", 2), pt("b", "x.md", 3), pt("c", "y.md", 0)]
+  body = phase(q01(record), "out")
+  rows = rows_of(body)
+  assert len(rows) == 3
+  assert '<span class="cite">1</span>' in rows[0]
+  assert "<code>x.md#2</code> <code>x.md#3</code>" in rows[0]
+  assert "<td>x.md</td>" in rows[0]
+  assert "<code>y.md#0</code>" in rows[1] and "<td>y.md</td>" in rows[1]
+  # a citation whose number has no source piece, and an unknown chunk id, survive
+  assert "<code>nobody</code>" in rows[2]
+  assert "<td></td>" in rows[2]
+
+
+def test_result_without_citations_says_so_and_a_source_without_a_name_gets_a_mark(
+  record: RunRecord,
+) -> None:
+  result = record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result
+  result["citations"] = []
+  assert "Sin citas." in phase(q01(record), "out")
+  result["citations"] = [{"number": 1, "chunk_ids": ["a"]}]
+  result["sources"] = [{"number": 1, "chunks": [{"chunk_id": "a"}]}]
+  assert "<td>?</td>" in phase(q01(record), "out")
+
+
+def test_result_survives_missing_optional_keys(record: RunRecord) -> None:
+  item = record["questions"][0]
+  assert item["generation"]
+  item["generation"]["result"] = {"status": "answered", "answer": "hola"}
+  body = phase(q01(record), "out")
+  assert "Estrategia</span> ?" in body
+  assert "Formato</span> ?" in body
+  assert "Enriquecimientos</span> —" in body
+  assert "0 piezas" in body
+  assert "Sin citas." in body
+
+
+# ---- J Juez
+
+
+def test_judge_section_shows_messages_raw_reply_verdict_and_reason(
+  report: str, real_record: RunRecord
+) -> None:
+  judge = real_record["questions"][0]["judge"]
+  assert judge
+  body = phase(panel_of(report, "q-q01"), "judge")
+  assert h.status_pill(judge["verdict"], "judge") in body
+  assert html_lib.escape(judge["reason"] or "") in body
+  assert html_lib.escape(judge["model"]) in body
+  assert body.count('<div class="msg ') == len(judge["messages"])
+  for message in judge["messages"]:
+    assert html_lib.escape(message["content"]) in body
+  assert html_lib.escape(judge["raw"] or "") in body
+
+
+def test_no_judge_means_no_judge_section_and_chip(record: RunRecord) -> None:
+  record["questions"][0]["judge"] = None
+  panel = q01(record)
+  assert "judge" not in phase_ids(panel)
+  assert not [t for t in flow_targets(panel) if t.endswith("-judge")]
+
+
+def test_judge_that_failed_shows_the_error_box_and_no_reply(record: RunRecord) -> None:
+  judge = record["questions"][0]["judge"]
+  assert judge
+  judge["verdict"] = None
+  judge["reason"] = None
+  judge["raw"] = None
+  judge["error"] = "juez caído"
+  panel = q01(record)
+  body = phase(panel, "judge")
+  assert '<div class="error">juez caído</div>' in body
+  assert "Sin respuesta." in body
+  assert '<span class="ph-sum">error</span>' in panel.split('id="q-q01-judge"')[1]
+
+
+def test_judge_with_no_messages(record: RunRecord) -> None:
+  judge = record["questions"][0]["judge"]
+  assert judge
+  judge["messages"] = []
+  assert "Sin mensajes." in phase(q01(record), "judge")
+
+
+# ---- a question whose run failed in each phase
+
+
+def failed_at(record: RunRecord, where: str) -> RunRecord:
+  """The first question as it is recorded when the pipeline died in ``where``."""
+  item = record["questions"][0]
+  item["error"] = f"{where}: se cayó"
+  item["rules"] = None
+  item["judge"] = None
+  if where == "retrieval":
+    item["retrieval"] = item["enrich"] = item["generation"] = None
+  elif where == "enrich":
+    item["enrich"] = item["generation"] = None
+  elif where == "enrich-late":
+    assert item["enrich"]
+    item["enrich"]["context"] = None
+    item["generation"] = None
+  elif where == "generation":
+    assert item["generation"]
+    item["generation"]["result"] = None
+    item["generation"]["llm_calls"] = [llm_call(text=None, error="llm: se cayó")]
+  elif where == "generation-early":
+    assert item["generation"]
+    item["generation"]["result"] = None
+    item["generation"]["llm_calls"] = []
+  elif where == "judge":
+    item["judge"] = {
+      "verdict": None,
+      "reason": None,
+      "model": "m",
+      "seconds": 0.1,
+      "messages": [],
+      "raw": None,
+      "error": "judge: se cayó",
+    }
+  return record
+
+
+@pytest.mark.parametrize(
+  ("where", "sections"),
+  [
+    ("retrieval", []),
+    ("enrich", ["in"]),
+    ("enrich-late", ["in", "seed", "e1", "e2", "e3"]),
+    ("generation", ["in", "seed", "e1", "e2", "e3", "budget", "llm"]),
+    ("generation-early", ["in", "seed", "e1", "e2", "e3", "budget", "llm"]),
+    (
+      "judge",
+      ["in", "seed", "e1", "e2", "e3", "budget", "prompt", "llm", "out", "judge"],
+    ),
+  ],
+)
+def test_a_question_that_failed_in_one_phase_keeps_the_phases_before_it(
+  record: RunRecord, where: str, sections: list[str]
+) -> None:
+  text = render_run(failed_at(record, where), token_counter=FAKE)
+  panel = panel_of(text, "q-q01")
+  assert phase_ids(panel) == sections
+  assert len(flow_targets(panel)) == len(sections)
+  assert f'<div class="error">{where}: se cayó</div>' in panel
+  assert "Mapa de documentos" in panel
+  assert tab_keys(text)[3] == "q-q01"
+
+
+def test_failed_generation_shows_the_failed_call_and_not_a_fake_result(
+  record: RunRecord,
+) -> None:
+  panel = q01(failed_at(record, "generation"))
+  assert '<div class="error">llm: se cayó</div>' in phase(panel, "llm")
+  assert h.status_pill("error", "generation") in panel
+
+
+def test_failed_generation_before_any_call_shows_the_question_error_in_l(
+  record: RunRecord,
+) -> None:
+  panel = q01(failed_at(record, "generation-early"))
+  assert '<div class="error">generation-early: se cayó</div>' in phase(panel, "llm")
+
+
+def test_failed_judge_keeps_every_other_section(record: RunRecord) -> None:
+  panel = q01(failed_at(record, "judge"))
+  assert '<div class="error">judge: se cayó</div>' in phase(panel, "judge")
+  assert "-out" in panel
+
+
+def test_a_phase_that_is_none_is_left_out_not_rendered_empty(record: RunRecord) -> None:
+  panel = q01(failed_at(record, "retrieval"))
+  assert '<details class="phase"' not in panel
+  assert '<div class="flow">' not in panel
+  assert "Entrada" not in panel
+
+
+def test_every_combination_of_missing_phases_renders(record: RunRecord) -> None:
+  """Each phase record is None in turn, and all together: nothing raises."""
+  base = record
+  for keys in (
+    ("retrieval",),
+    ("enrich",),
+    ("generation",),
+    ("rules",),
+    ("judge",),
+    ("retrieval", "enrich"),
+    ("enrich", "generation"),
+    ("retrieval", "generation", "judge"),
+    ("retrieval", "enrich", "generation", "rules", "judge"),
+  ):
+    rec = copy.deepcopy(base)
+    for key in keys:
+      rec["questions"][0][key] = None  # type: ignore[literal-required]
+    render_run(rec, token_counter=FAKE)
+
+
+def test_retrieval_present_but_enrich_none_has_no_seed(record: RunRecord) -> None:
+  record["questions"][0]["enrich"] = None
+  ids = phase_ids(q01(record))
+  assert "seed" not in ids and "budget" not in ids and "in" in ids
+
+
+def test_enrich_present_but_retrieval_none_shows_no_phase_that_needs_it(
+  record: RunRecord,
+) -> None:
+  record["questions"][0]["retrieval"] = None
+  ids = phase_ids(q01(record))
+  assert "in" not in ids and "seed" not in ids
+
+
+# ---- document map
+
+
+def doc_map(panel: str) -> dict[str, dict[str, Any]]:
+  """``source -> {expected, count, cells: [{index, state, classes, title}]}``."""
+  start = panel.index("Mapa de documentos")
+  end = panel.find('<details class="phase"', start)
+  card_html = panel[start : end if end != -1 else len(panel)]
+  rows: dict[str, dict[str, Any]] = {}
+  parts = card_html.split('<div class="maprow')[1:]
+  for part in parts:
+    head = re.match(
+      r'( expected)?"><div class="mapdoc"><b>(.*?)</b><span>(.*?)</span>', part
+    )
+    assert head, part[:200]
+    cells = []
+    for classes, title, index in re.findall(
+      r'<span class="(cell[^"]*)" title="([^"]*)">(\d+)</span>', part
+    ):
+      names = classes.split()
+      states = {"orig", "added", "unused"} & set(names)
+      assert len(states) == 1
+      cells.append(
+        {
+          "index": int(index),
+          "state": next(iter(states)),
+          "classes": set(names),
+          "title": html_lib.unescape(title),
+        }
+      )
+    rows[html_lib.unescape(head.group(2))] = {
+      "expected": bool(head.group(1)),
+      "count": html_lib.unescape(head.group(3)),
+      "cells": cells,
+      "empty": "sin chunks en la colección" in part,
+    }
+  return rows
+
+
+def map_record(record: RunRecord) -> RunRecord:
+  """Documents with every cell class: orig, added, unused, dropped, cited."""
+  points = [
+    pt("z2", "z.md", 2),
+    pt("z0", "z.md", 0),
+    pt("a3", "a.md", 3),
+    pt("a0", "a.md", 0, ["Parte", "Capítulo"], "  hola\n\n   mundo " + "x" * 300),
+    pt("a2", "a.md", 2),
+    pt("a1", "a.md", 1),
+    pt("a4", "a.md", 4),
+    pt("b0", "b.md", 0),
+    pt("b1", "b.md", 1),
+    pt("n0", None, None),  # no source and no index: never a cell
+    pt("d0", "d.md", 0),
+  ]
+  a1 = rf("a1", 0.9, source="a.md", index=1)
+  a2 = rf("a2", None, ("neighbors",), "a.md", 2)
+  d0 = rf("d0", None, ("neighbors",), "d.md", 0)
+  seed = cx(pc("uno", a1))
+  grown = cx(pc("uno dos", a1, a2), pc("d", d0))
+  final = cx(pc("uno", a1), dropped=("a2",))
+  return hand_record(
+    record,
+    points=points,
+    chunks=[rc("a1", "a.md", 1), rc("n0", None, None), rc("z0", "z.md", 0)],
+    steps=[step("neighbors", seed, grown)],
+    final=final,
+    documents=["b.md", "ghost.md"],
+    citations=[{"number": 1, "chunk_ids": ["a1", "z0"]}],
+    result_dropped=["z0"],
+  )
+
+
+def test_document_map_rows_are_the_retrieved_added_and_expected_documents_sorted(
+  record: RunRecord,
+) -> None:
+  rows = doc_map(q01(map_record(record)))
+  # a.md retrieved, b.md and ghost.md expected, d.md only added, z.md retrieved;
+  # "nosource" has a retrieved chunk but no source: no row.
+  assert list(rows) == ["a.md", "b.md", "d.md", "ghost.md", "z.md"]
+
+
+def test_document_map_has_one_cell_per_chunk_index_sorted_by_index(
+  record: RunRecord,
+) -> None:
+  rows = doc_map(q01(map_record(record)))
+  assert [c["index"] for c in rows["a.md"]["cells"]] == [0, 1, 2, 3, 4]
+  assert [c["index"] for c in rows["z.md"]["cells"]] == [0, 2]
+  assert rows["a.md"]["count"] == "5 chunks"
+
+
+def test_document_map_cell_states(record: RunRecord) -> None:
+  rows = doc_map(q01(map_record(record)))
+  state = {c["index"]: c["state"] for c in rows["a.md"]["cells"]}
+  assert state == {0: "unused", 1: "orig", 2: "added", 3: "unused", 4: "unused"}
+  assert {c["state"] for c in rows["b.md"]["cells"]} == {"unused"}
+  assert [c["state"] for c in rows["d.md"]["cells"]] == ["added"]
+  assert {c["index"]: c["state"] for c in rows["z.md"]["cells"]} == {
+    0: "orig",
+    2: "unused",
+  }
+
+
+def test_document_map_dropped_and_cited_flags(record: RunRecord) -> None:
+  rows = doc_map(q01(map_record(record)))
+  cells = {c["index"]: c["classes"] for c in rows["a.md"]["cells"]}
+  assert "dropped" in cells[2]  # dropped by the final context
+  assert "dropped" not in cells[1] and "cited" in cells[1]
+  assert "cited" not in cells[2]
+  assert not ({"dropped", "cited"} & cells[0])
+  z = {c["index"]: c["classes"] for c in rows["z.md"]["cells"]}
+  # dropped only by the result's own list, and cited
+  assert {"orig", "dropped", "cited"} <= z[0]
+  assert not ({"dropped", "cited"} & z[2])
+
+
+def test_document_map_dropped_is_the_union_of_context_and_result_lists(
+  record: RunRecord,
+) -> None:
+  record = map_record(record)
+  item = record["questions"][0]
+  assert item["enrich"] and item["enrich"]["context"]
+  assert item["generation"] and item["generation"]["result"]
+  item["enrich"]["context"]["dropped_chunk_ids"] = ["a1"]
+  item["generation"]["result"]["dropped_chunk_ids"] = ["a4", "a3"]
+  cells = {c["index"]: c["classes"] for c in doc_map(q01(record))["a.md"]["cells"]}
+  assert [i for i, c in cells.items() if "dropped" in c] == [1, 3, 4]
+
+
+def test_document_map_expected_rows_and_missing_collection(record: RunRecord) -> None:
+  rows = doc_map(q01(map_record(record)))
+  assert rows["b.md"]["expected"] and rows["ghost.md"]["expected"]
+  assert not rows["a.md"]["expected"] and not rows["z.md"]["expected"]
+  assert rows["b.md"]["count"] == "2 chunks · esperado"
+  assert rows["ghost.md"]["cells"] == [] and rows["ghost.md"]["empty"]
+  assert rows["ghost.md"]["count"] == "0 chunks · esperado"
+  assert not rows["a.md"]["empty"]
+
+
+def test_document_map_tooltip_is_index_heading_path_and_160_char_preview(
+  record: RunRecord,
+) -> None:
+  rows = doc_map(q01(map_record(record)))
+  zero = rows["a.md"]["cells"][0]["title"]
+  parts = zero.split(" · ")
+  assert parts[0] == "#0"
+  assert parts[1] == "Parte › Capítulo"
+  assert parts[2] == "hola mundo " + "x" * (160 - len("hola mundo "))
+  assert len(parts[2]) == 160
+  # no heading path and short text: only the index and the preview
+  assert rows["a.md"]["cells"][3]["title"] == "#3 · texto del chunk"
+
+
+@pytest.mark.xfail(
+  strict=True,
+  reason="a payload whose text is None prints the word None in the tooltip",
+)
+def test_document_map_tooltip_survives_odd_payloads(record: RunRecord) -> None:
+  points = [
+    pt("p0", "a.md", 0, text=""),
+    {
+      "id": "p1",
+      "payload": {"source": "a.md", "chunk_index": 1, "heading_path": None},
+      "vector": None,
+    },
+    {
+      "id": "p2",
+      "payload": {
+        "source": "a.md",
+        "chunk_index": 2,
+        "heading_path": "texto",
+        "text": 5,
+      },
+      "vector": None,
+    },
+    {
+      "id": "p3",
+      "payload": {"source": "a.md", "chunk_index": 3, "text": None},
+      "vector": None,
+    },
+  ]
+  rows = doc_map(q01(hand_record(record, points=points, chunks=[rc("p0", "a.md", 0)])))
+  titles = [c["title"] for c in rows["a.md"]["cells"]]
+  assert titles[0] == "#0"
+  assert titles[1] == "#1"
+  assert titles[2] == "#2 · 5"
+  assert "None" not in titles[3], titles[3]
+
+
+def test_document_map_ignores_points_without_a_usable_chunk_index(
+  record: RunRecord,
+) -> None:
+  points = [
+    pt("p0", "a.md", 0),
+    {"id": "p1", "payload": {"source": "a.md", "chunk_index": "1"}, "vector": None},
+    {"id": "p2", "payload": {"source": "a.md", "chunk_index": True}, "vector": None},
+    {"id": "p3", "payload": {"source": "a.md", "chunk_index": None}, "vector": None},
+    {"id": "p4", "payload": {"source": "", "chunk_index": 4}, "vector": None},
+    {"id": "p5", "payload": {"source": 7, "chunk_index": 5}, "vector": None},
+  ]
+  rows = doc_map(q01(hand_record(record, points=points, chunks=[rc("p0", "a.md", 0)])))
+  assert [c["index"] for c in rows["a.md"]["cells"]] == [0]
+
+
+@pytest.mark.parametrize(("count", "compact"), [(400, False), (401, True)])
+def test_document_map_cells_are_compact_above_400_chunks(
+  record: RunRecord, count: int, compact: bool
+) -> None:
+  points = [pt(f"p{n}", "big.md", n) for n in range(count)] + [pt("o", "small.md", 0)]
+  rows = doc_map(
+    q01(
+      hand_record(
+        record, points=points, chunks=[rc("p0", "big.md", 0), rc("o", "small.md", 0)]
+      )
+    )
+  )
+  assert len(rows["big.md"]["cells"]) == count
+  assert all(("sm" in c["classes"]) is compact for c in rows["big.md"]["cells"])
+  assert all(
+    "sm" not in c["classes"] for c in rows["small.md"]["cells"]
+  )  # per document
+
+
+def test_document_map_legend_names_every_class(record: RunRecord) -> None:
+  panel = q01(map_record(record))
+  legend = re.search(r'<div class="legend">(.*?)</div>', panel, re.S)
+  assert legend
+  text = text_of(legend.group(1))
+  for word in ("recuperado", "añadido", "no usado", "descartado", "citado", "esperado"):
+    assert word in text
+  classes = re.findall(r'<span class="(cell[^"]*)">', legend.group(1))
+  assert {
+    "cell orig",
+    "cell added",
+    "cell unused",
+    "cell orig dropped",
+    "cell orig cited",
+  } <= set(classes)
+
+
+def test_document_map_real_run_marks_the_expected_document_and_the_cited_chunk(
+  report: str, real_record: RunRecord
+) -> None:
+  panel = panel_of(report, "q-q01")
+  rows = doc_map(panel)
+  assert rows["parte-1/capitulo-01.md"]["expected"]
+  item = real_record["questions"][0]
+  assert item["generation"] and item["generation"]["result"]
+  cited = {
+    cid for c in item["generation"]["result"]["citations"] for cid in c["chunk_ids"]
+  }
+  by_id = {p["id"]: p["payload"] for p in real_record["points"]}
+  for cid in cited:
+    source, index = by_id[cid]["source"], by_id[cid]["chunk_index"]
+    cell = next(c for c in rows[source]["cells"] if c["index"] == index)
+    assert "cited" in cell["classes"]
+  assert list(rows) == sorted(rows)
+
+
+def test_document_map_budget_run_marks_the_dropped_chunks(
+  budget_record: RunRecord,
+) -> None:
+  item = budget_record["questions"][0]
+  assert item["enrich"] and item["enrich"]["context"]
+  dropped = set(item["enrich"]["context"]["dropped_chunk_ids"])
+  assert dropped
+  by_id = {p["id"]: p["payload"] for p in budget_record["points"]}
+  rows = doc_map(panel_of(render_run(budget_record), "q-q01"))
+  flagged = {
+    (source, c["index"])
+    for source, row in rows.items()
+    for c in row["cells"]
+    if "dropped" in c["classes"]
+  }
+  assert flagged == {
+    (by_id[cid]["source"], by_id[cid]["chunk_index"]) for cid in dropped
+  }
+
+
+def test_document_map_without_any_document(record: RunRecord) -> None:
+  item = record["questions"][0]
+  item["spec"]["documents"] = []
+  hand = hand_record(record, points=[], chunks=[])
+  assert "No hay documentos que mostrar." in q01(hand)
+
+
+def test_document_map_is_built_strictly_from_points(record: RunRecord) -> None:
+  """A retrieved chunk whose point is missing from the record has no cell."""
+  rec = hand_record(
+    record,
+    points=[pt("known", "a.md", 0)],
+    chunks=[rc("known", "a.md", 0), rc("missing", "a.md", 1)],
+  )
+  rows = doc_map(q01(rec))
+  assert [c["index"] for c in rows["a.md"]["cells"]] == [0]
+
+
+# ---- escaping in the phase sections
+
+
+def hostile_phases(record: RunRecord) -> RunRecord:
+  """Hostile text in every field that the question sections print."""
+  item = record["questions"][0]
+  assert item["retrieval"] and item["enrich"] and item["generation"]
+  assert item["generation"]["result"] and item["judge"]
+  for point in record["points"]:
+    point["payload"]["text"] = HOSTILE
+    point["payload"]["heading_path"] = [HOSTILE, HOSTILE]
+  item["retrieval"]["queries"] = [{"text": HOSTILE, "chain": [HOSTILE]}]
+  for chunk in item["retrieval"]["chunks"]:
+    chunk["text"] = HOSTILE
+    chunk["collection_name"] = HOSTILE
+    chunk["metadata"]["source"] = HOSTILE
+    chunk["metadata"]["heading_path"] = [HOSTILE]
+  for number, one in enumerate(item["enrich"]["steps"]):
+    one["name"] = HOSTILE + str(number)
+    one["phase"] = HOSTILE
+    one["reads"] = [
+      {
+        "ranges": [
+          {"collection_name": HOSTILE, "doc_id": HOSTILE, "first": 0, "last": 1}
+        ],
+        "returned": [HOSTILE],
+        "seconds": 0.0,
+      }
+    ]
+    for context in (one["before"], one["after"]):
+      for piece in context["pieces"]:
+        piece["text"] = HOSTILE
+        piece["transforms"] = [HOSTILE]
+        for ref in piece["chunks"]:
+          ref["chunk_id"] = HOSTILE
+          ref["collection_name"] = HOSTILE
+          ref["source"] = HOSTILE
+          ref["origin"] = [HOSTILE]
+  final = item["enrich"]["context"]
+  assert final
+  final["dropped_chunk_ids"] = [HOSTILE]
+  for piece in final["pieces"]:
+    piece["text"] = HOSTILE
+    piece["transforms"] = [HOSTILE]
+    for ref in piece["chunks"]:
+      ref["chunk_id"] = HOSTILE
+      ref["source"] = HOSTILE
+  item["generation"]["llm_calls"] = [
+    llm_call(text=HOSTILE, params={HOSTILE: HOSTILE}, model=HOSTILE),
+    llm_call(text=None, error=HOSTILE),
+  ]
+  result = item["generation"]["result"]
+  result["strategy"] = HOSTILE
+  result["response_format"] = HOSTILE
+  result["enrichments"] = [HOSTILE]
+  result["citations"] = [{"number": 1, "chunk_ids": [HOSTILE]}]
+  result["sources"] = [
+    {"number": 1, "chunks": [{"chunk_id": HOSTILE, "source": HOSTILE}]}
+  ]
+  result["prompt"] = [{"role": HOSTILE, "content": HOSTILE}]
+  result["dropped_chunk_ids"] = [HOSTILE]
+  item["judge"]["messages"] = [{"role": HOSTILE, "content": HOSTILE}]
+  return record
+
+
+def test_hostile_text_in_every_phase_section_is_escaped(record: RunRecord) -> None:
+  text = render_run(hostile_phases(record), token_counter=FAKE)
+  page = parse(text)
+  assert page.tags("img") == []
+  assert len(page.tags("script")) == 1
+  assert all(not any(name.startswith("on") for name in a) for _, a in page.elements)
+  assert "<script>alert" not in text
+  assert text.count(html_lib.escape(HOSTILE)) > 40
+  assert len(tab_keys(text)) == 6
+  panel = panel_of(text, "q-q01")
+  assert phase_ids(panel)[:2] == ["in", "seed"]
+  assert "llm" in phase_ids(panel)
+
+
+def test_hostile_text_in_phase_sections_reaches_the_user_unchanged(
+  record: RunRecord,
+) -> None:
+  page = parse(render_run(hostile_phases(record), token_counter=FAKE))
+  assert page.body_text().count(HOSTILE) > 20
+
+
+def test_hostile_map_cells_and_tooltips_cannot_break_out(record: RunRecord) -> None:
+  points = [pt("p", HOSTILE, 0, [HOSTILE], HOSTILE)]
+  rec = hand_record(
+    record, points=points, chunks=[rc("p", HOSTILE, 0)], documents=[HOSTILE]
+  )
+  text = q01(rec)
+  page = parse(text)
+  assert page.tags("img") == []
+  cells = [a for a in page.tags("span") if (a.get("class") or "").startswith("cell")]
+  assert cells
+  assert all(set(a) <= {"class", "title"} for a in cells)
+  assert any(HOSTILE in (a.get("title") or "") for a in cells)
+
+
+def test_hostile_json_block_cannot_close_the_script_or_pre(record: RunRecord) -> None:
+  result = record["questions"][0]["generation"]["result"]  # type: ignore[index]
+  assert result
+  result["answer"] = "</pre></details></script><script>alert(1)</script>"
+  result["extra"] = "</pre><script>alert(2)</script>"
+  text = render_run(record, token_counter=FAKE)
+  assert text.count("<script>") == 1
+  assert text.count("</script>") == 1
+
+
+def test_hostile_question_id_cannot_break_section_anchors_or_chips(
+  record: RunRecord,
+) -> None:
+  record["questions"][0]["spec"]["id"] = '"><img src=x onerror=alert(1)>'
+  text = render_run(record, token_counter=FAKE)
+  page = parse(text)
+  assert page.tags("img") == []
+  for attrs in page.tags("a"):
+    if attrs.get("class") == "chip":
+      assert set(attrs) == {"class", "href"}
+  for attrs in page.tags("details"):
+    assert set(attrs) <= {"class", "id", "open"}
+
+
+# ---- byte-identical output
+
+
+def test_phase_sections_are_byte_identical_for_the_same_record(
+  budget_record: RunRecord,
+) -> None:
+  first = render_run(budget_record, token_counter=FAKE)
+  assert render_run(budget_record, token_counter=FAKE) == first
+  again: RunRecord = json.loads(json.dumps(budget_record))
+  assert render_run(again, token_counter=FAKE) == first
+  assert (
+    render_run(copy.deepcopy(budget_record), token_counter=FAKE).encode()
+    == first.encode()
+  )
+
+
+def test_hand_built_record_is_byte_identical_and_not_mutated(record: RunRecord) -> None:
+  rec = map_record(record)
+  before = json.dumps(rec, sort_keys=True)
+  first = render_run(rec, token_counter=FAKE)
+  assert render_run(rec, token_counter=FAKE) == first
+  assert json.dumps(rec, sort_keys=True) == before
+
+
+def test_output_does_not_depend_on_the_order_the_sets_are_iterated(
+  record: RunRecord,
+) -> None:
+  """Sets of chunk ids drive the map; PYTHONHASHSEED must not leak into the page."""
+  script = (
+    "import json,sys\n"
+    "from hermes_report.render import render_run\n"
+    "class C:\n"
+    "  name='c'\n"
+    "  def count(self, t): return len(t.split())\n"
+    "rec=json.load(open(sys.argv[1]))\n"
+    "sys.stdout.write(render_run(rec, token_counter=C()))\n"
+  )
+  rec = map_record(copy.deepcopy(record))
+  outputs = set()
+  import os
+  import sys
+  import tempfile
+
+  with tempfile.TemporaryDirectory() as tmp:
+    data = Path(tmp) / "r.json"
+    data.write_text(json.dumps(rec), encoding="utf-8")
+    for seed in ("0", "1", "12345"):
+      done = subprocess.run(
+        [sys.executable, "-c", script, str(data)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+        env={**os.environ, "PYTHONHASHSEED": seed},
+      )
+      outputs.add(done.stdout)
+  assert len(outputs) == 1
+
+
+def test_question_panel_and_default_counter_do_not_change_other_tabs(
+  real_record: RunRecord,
+) -> None:
+  """The question tabs add content but the summary/corpus panels stay as before."""
+  text = render_run(real_record, token_counter=FAKE)
+  other = render_run(real_record)
+  for key in ("resumen", "corpus", "chunks"):
+    assert panel_of(text, key) == panel_of(other, key)
+
+
+def default_counter() -> Any:
+  from hermes_enrich.tokens import default_token_counter
+
+  return default_token_counter()
+
+
+# ---- remaining branches
+
+
+def test_step_with_no_pieces_says_so(record: RunRecord) -> None:
+  empty = cx()
+  record = hand_record(record, points=[], steps=[step("n", empty, empty)], final=empty)
+  panel = q01(record)
+  assert "Sin piezas." in phase(panel, "e1")
+  assert "Sin piezas." in phase(panel, "seed")
+  assert '<span class="ph-sum">0 piezas · 0 tok</span>' in panel
+
+
+def test_added_chunk_without_a_known_source_adds_no_document_row(
+  record: RunRecord,
+) -> None:
+  ghost = rf("ghost", None, ("neighbors",))
+  before, after = (
+    cx(pc("a", rf("a", 0.5, source="a.md", index=0))),
+    cx(pc("a", rf("a", 0.5, source="a.md", index=0)), pc("g", ghost)),
+  )
+  record = hand_record(
+    record,
+    points=[pt("a", "a.md", 0)],
+    chunks=[rc("a", "a.md", 0)],
+    steps=[step("n", before, after)],
+    final=after,
+    documents=[],
+  )
+  assert list(doc_map(q01(record))) == ["a.md"]
+
+
+def test_write_report_with_a_lone_surrogate_raises_record_error(
+  record: RunRecord, tmp_path: Path
+) -> None:
+  record["description"] = "mal \ud800 codificado"
+  target = tmp_path / "report.html"
+  with pytest.raises(RecordError) as caught:
+    write_report(record, target)
+  assert str(target) in str(caught.value)
+  assert "UTF-8" in str(caught.value)
+
+
+def test_a_surrogate_in_the_question_sections_also_gives_record_error(
+  record: RunRecord, tmp_path: Path
+) -> None:
+  item = record["questions"][0]
+  assert item["retrieval"]
+  item["retrieval"]["chunks"][0]["text"] = "\ud800"
+  with pytest.raises(RecordError):
+    write_report(record, tmp_path / "x" / "report.html")
+
+
+@pytest.mark.xfail(
+  strict=True,
+  reason="write_text truncates the file before the encoding fails: a good report is lost",
+)
+def test_a_failed_encoding_leaves_the_previous_report_intact(
+  record: RunRecord, tmp_path: Path
+) -> None:
+  target = tmp_path / "report.html"
+  target.write_text("previous good report", encoding="utf-8")
+  record["description"] = "\ud800"
+  with pytest.raises(RecordError):
+    write_report(record, target)
+  assert target.read_text(encoding="utf-8") == "previous good report"
