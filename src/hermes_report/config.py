@@ -158,9 +158,11 @@ class OutputConfig:
 class Overrides:
   """Command-line values that replace run-file keys.
 
-  ``out`` must not be empty (``Path("")`` is ``Path(".")`` and is rejected; give
-  an explicit path), and ``only`` must be a tuple or list of non-empty strings,
-  not a bare string; ``load_config`` raises ``ConfigError`` otherwise.
+  ``out`` is resolved against the current directory (``Path(".")``, which is
+  also ``Path("")``, means the current directory; the command line rejects an
+  empty ``--out`` before building the path). ``only`` must be a tuple or list
+  of non-empty strings, not a bare string; ``load_config`` raises
+  ``ConfigError`` otherwise.
   """
 
   model: str | None = None
@@ -729,13 +731,6 @@ def load_config(path: Path, overrides: Overrides | None = None) -> RunConfig:
       )
       enrich = replace(enrich, max_context_tokens=budget)
     if overrides.out is not None:
-      if overrides.out == Path():
-        raise ConfigError(
-          path,
-          "no puede estar vacío; indique una ruta explícita"
-          " (opción de la línea de comandos)",
-          "output.dir",
-        )
       text = _override(path, "output.dir", non_empty_str, str(overrides.out))
       output = replace(output, dir=_resolve(path, "output.dir", Path(), text))
     only = _override(path, "only", _as_only, overrides.only)

@@ -860,17 +860,20 @@ class TestOverrides:
 
   # --- robustness: bad input must always surface as ConfigError -------------------
 
-  @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+  @pytest.mark.parametrize("blank", ["   ", "\t"])
   def test_blank_out_override_is_rejected(
     self, write_run: WriteRun, blank: str
   ) -> None:
     fails(write_run(), "output.dir", Overrides(out=Path(blank)))
 
-  def test_dot_out_override_is_rejected_like_an_empty_path(
-    self, write_run: WriteRun
+  @pytest.mark.parametrize("current", [".", ""])
+  def test_dot_out_override_resolves_to_the_current_directory(
+    self, write_run: WriteRun, current: str
   ) -> None:
-    # Known design point: pathlib cannot tell Path(".") from Path("").
-    fails(write_run(), "output.dir", Overrides(out=Path(".")))
+    # Path("") is Path("."): both mean the current directory (the CLI rejects an
+    # empty --out before a Path exists).
+    config = load_config(write_run(), Overrides(out=Path(current)))
+    assert config.output.dir == Path.cwd()
 
   def test_explicit_out_override_is_accepted(
     self, write_run: WriteRun, tmp_path: Path
