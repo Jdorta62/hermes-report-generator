@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import shutil
+import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from qdrant_client import QdrantClient
+
+from hermes_report.config import RunConfig, load_config
+from hermes_report.corpus import load_corpus
+from hermes_report.ingest import ingest_corpus
+from hermes_report.providers import HashEmbedder
+from hermes_report.questions import QuestionSet, load_questions
+from hermes_report.store import ensure_collection
 
 DATA = Path(__file__).parent / "data"
 
@@ -48,3 +58,38 @@ def write_run(tmp_path: Path) -> Callable[..., Path]:
     return path
 
   return write
+
+
+COLLECTION = "hermes_report_pipeline_test"
+
+
+@dataclass(frozen=True)
+class PipelineEnv:
+  """The sample corpus ingested into an in-memory Qdrant, ready to be queried."""
+
+  config: RunConfig
+  qdrant: QdrantClient
+  collection: str
+  embedder: HashEmbedder
+  questions: QuestionSet
+
+
+@pytest.fixture(scope="module")
+def pipeline_env(tmp_path_factory: pytest.TempPathFactory) -> PipelineEnv:
+  """``tests/data`` ingested with ``HashEmbedder`` into ``QdrantClient(":memory:")``."""
+  config = load_config(DATA / "run.toml")
+  embedder = HashEmbedder(256)
+  ingestion = ingest_corpus(
+    load_corpus(DATA / "corpus"),
+    config.ingest,
+    config.embedding,
+    embedder,
+    tmp_path_factory.mktemp("cache"),
+  )
+  qdrant = QdrantClient(":memory:")
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    ensure_collection(qdrant, COLLECTION, ingestion.points, ":memory:")
+  return PipelineEnv(
+    config, qdrant, COLLECTION, embedder, load_questions(config.questions.file)
+  )
