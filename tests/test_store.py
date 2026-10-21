@@ -41,7 +41,6 @@ URL = ":memory:"
 def _local_index_warning() -> Iterator[None]:
   """Local mode warns that payload indexes have no effect; that is expected."""
   with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message="Payload indexes have no effect")
     warnings.filterwarnings("ignore", message="Failed to obtain server version")
     yield
 
@@ -799,3 +798,39 @@ def _exploding() -> Any:
 
 def _as_client(fake: object) -> QdrantClient:
   return fake  # type: ignore[return-value]
+
+
+def test_rebuilding_a_local_collection_emits_no_payload_index_warning(
+  fresh_qdrant_warnings: None,
+) -> None:
+  client = QdrantClient(URL)
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    ensure_collection(client, NAME, [_point(1)], URL)
+  assert [w for w in caught if "Payload indexes" in str(w.message)] == []
+
+
+def test_other_warnings_from_the_index_calls_still_reach_the_caller(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  client = QdrantClient(URL)
+
+  def noisy(*args: Any, **kwargs: Any) -> None:
+    warnings.warn("something else is wrong", UserWarning, stacklevel=2)
+
+  monkeypatch.setattr(client, "create_payload_index", noisy)
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    ensure_collection(client, NAME, [_point(1)], URL)
+  assert "something else is wrong" in [str(w.message) for w in caught]
+
+
+def test_the_warning_filter_does_not_leak_out_of_ensure_collection() -> None:
+  client = QdrantClient(URL)
+  ensure_collection(client, NAME, [_point(1)], URL)
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    warnings.warn(
+      "Payload indexes have no effect in the local Qdrant", UserWarning, stacklevel=2
+    )
+  assert len(caught) == 1
