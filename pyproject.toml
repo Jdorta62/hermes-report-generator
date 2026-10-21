@@ -4,7 +4,14 @@ version = "0.1.0"
 description = "Hermes Report Generator"
 authors = [{ name = "Jose Gregorio Dorta Luis" }]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "hermes-core==0.6.0",
+  "hermes-enrich",
+  "hermes-generator[ollama]",
+  "hermes-ingest-md",
+  "hermes-retrieval",
+  "qdrant-client>=1.12",
+]
 
 [dependency-groups]
 dev = [
@@ -43,3 +50,11 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+
+# Each module is pinned to a commit of its repository; bump them together.
+[tool.uv.sources]
+hermes-core = { git = "https://github.com/Jdorta62/hermes-core", tag = "v0.6.0" }
+hermes-enrich = { git = "ssh://git@github.com/Jdorta62/hermes-enrich.git", rev = "1f6befe795026f944617960c531a71339f367f94" }
+hermes-generator = { git = "ssh://git@github.com/Jdorta62/hermes-generator.git", rev = "bf59c88183f61608d056c18eb2d8c623140aceba" }
+hermes-ingest-md = { git = "ssh://git@github.com/hermes-ingestion/hermes-ingestion-md.git", rev = "53a8e6404db9581381be1c55f743ae1df4359b50" }
+hermes-retrieval = { git = "ssh://git@github.com/Jdorta62/hermes-retrieval.git", rev = "b1875bba6c462bd7690d7886f2474c2136e2100b" }
