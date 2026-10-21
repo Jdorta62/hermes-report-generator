@@ -9,6 +9,8 @@
 
 @mod hermes_report.config :: Run file: the TOML description of a run, validated and with defaults applied -> hermes_report/config.api
 @mod hermes_report.corpus :: Markdown corpus: the documents of a folder, hashed and sorted -> hermes_report/corpus.api
+@mod hermes_report.ingest :: Ingestion of a corpus into Qdrant points, with a per-document cache on disk -> hermes_report/ingest.api
 @mod hermes_report.providers :: Providers of a run: embedders, LLM clients and judge clients, real and offline -> hermes_report/providers.api
 @mod hermes_report.questions :: Questions file: the JSON battery with expected answers and its rule checks -> hermes_report/questions.api
 @mod hermes_report.record :: Run record: the schema of ``run.json``, its converters and its file I/O -> hermes_report/record.api
+@mod hermes_report.store :: The Qdrant collection of a run: create or reuse it, and read it back as stored -> hermes_report/store.api
