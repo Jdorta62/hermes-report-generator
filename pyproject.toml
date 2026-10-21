@@ -1,0 +1,45 @@
+[project]
+name = "hermes-report"
+version = "0.1.0"
+description = "Hermes Report Generator"
+authors = [{ name = "Jose Gregorio Dorta Luis" }]
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy>=2.4",
+  "pytest>=9.1",
+  "pytest-cov>=7.1",
+  "ruff>=0.16",
+  "rust-just>=1.58",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13"]
+build-backend = "uv_build"
+
+[tool.ruff]
+indent-width = 2
+target-version = "py312"
+# Never touch Markdown (ruff formats code blocks in .md files).
+extend-exclude = ["*.md"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

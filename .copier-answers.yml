@@ -1,0 +1,9 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: v0.0.4
+_src_path: git@github.com:Jdorta62/agentic-template.git
+agent_email_domain: hermes.local
+author_name: Jose Gregorio Dorta Luis
+package_name: hermes_report
+project_name: Hermes Report Generator
+python_version: '3.12'
+use_obsidian_docs: true

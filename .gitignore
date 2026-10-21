@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[co]
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Secrets
+.env
+.env.*
+
+# Claude Code personal files
+.claude/settings.local.json
+
+# Pending template updates (see `just updates`)
+.claude/template-updates/
+CLAUDE.local.md
+
+# OS
+.DS_Store
