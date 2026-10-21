@@ -13,6 +13,9 @@ dependencies = [
   "qdrant-client>=1.12",
 ]
 
+[project.scripts]
+hermes-report = "hermes_report.cli:main"
+
 [dependency-groups]
 dev = [
   "mypy>=2.4",
