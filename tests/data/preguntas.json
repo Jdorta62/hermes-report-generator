@@ -1,0 +1,24 @@
+{
+  "title": "Batería de prueba",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "¿Cuántos días tardó en ponerle nombre a su rocín?",
+      "expected": "Cuatro días; lo llamó Rocinante.",
+      "keywords": ["cuatro", "Rocinante"],
+      "evidence": ["Cuatro días se le pasaron en imaginar qué nombre le pondría"],
+      "documents": ["parte-1/capitulo-01.md"]
+    },
+    {
+      "question": "¿De dónde salió don Quijote?",
+      "expected": "De su aldea.",
+      "documents": ["parte-1/capitulo-02.md"]
+    },
+    {
+      "id": "q11",
+      "question": "¿En qué año murió Sancho Panza?",
+      "expected": "El libro no lo dice.",
+      "refusal": true
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+title = "Don Quijote"
+description = "Batería de prueba"
+
+[corpus]
+dir = "corpus"
+glob = "**/*.md"
+
+[questions]
+file = "preguntas.json"
+
+[ingest]
+max_chunk_size = 1500
+hard_boundary_levels = [1, 2]
+strip_frontmatter = true
+
+[embedding]
+provider = "hash"
+model = "hash-256"
+
+[qdrant]
+url = ":memory:"
+collection = ""
+
+[retrieval]
+top_k = 5
+candidate_factor = 2
+score_threshold = 0.3
+
+[enrich]
+chain = ["neighbors", "merge", "doc_order"]
+max_context_tokens = 3000
+max_chunks = 20
+
+[generation]
+provider = "echo"
+model = "echo"
+temperature = 0.0
+seed = 42
+response_format = "plain"
+insufficient_message = "No lo sé con estas fuentes."
+
+[judge]
+enabled = true
+provider = "echo"
+model = ""
+
+[output]
+dir = "out"
+cache_dir = ".hermes-report-cache"
