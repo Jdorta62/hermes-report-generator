@@ -7,6 +7,7 @@ they do not depend on the pipeline.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tomllib
@@ -96,10 +97,12 @@ def test_run_prints_folder_and_record_and_returns_0(
   [folder] = list(out.iterdir())
   assert f"Carpeta: {folder}" in captured.out.splitlines()
   assert f"Registro: {folder / 'run.json'}" in captured.out.splitlines()
-  assert captured.out.splitlines()[-2:] == [
+  assert captured.out.splitlines()[-3:] == [
     f"Carpeta: {folder}",
     f"Registro: {folder / 'run.json'}",
+    f"Informe: {folder / 'report.html'}",
   ]
+  assert (folder / "report.html").is_file()
   assert [q["query_id"] for q in read_record(folder / "run.json")["questions"]] == [
     "q01",
     "q02",
@@ -619,3 +622,271 @@ def test_console_script_is_installed(project: Path, out: Path) -> None:
     timeout=120,
   )
   assert result.returncode == 0, result.stderr
+
+
+# ------------------------------------------------------------ render
+
+
+@pytest.fixture
+def run_json(run_toml: Path, out: Path, forbid_ollama: None) -> Path:
+  """The ``run.json`` of a real offline run, with its ``report.html`` removed."""
+  assert main(["run", str(run_toml), "--out", str(out)]) == 0
+  [folder] = list(out.iterdir())
+  (folder / "report.html").unlink()
+  return folder / "run.json"
+
+
+def test_run_writes_report_html_into_the_run_folder(
+  run_toml: Path, out: Path, forbid_ollama: None
+) -> None:
+  assert main(["run", str(run_toml), "--out", str(out)]) == 0
+  [folder] = list(out.iterdir())
+  assert sorted(p.name for p in folder.iterdir()) == [
+    "report.html",
+    "run.json",
+    "run.toml",
+  ]
+  text = (folder / "report.html").read_text(encoding="utf-8")
+  assert text.startswith("<!doctype html>")
+  assert 'data-key="q-q01"' in text
+
+
+def test_run_with_failed_questions_still_writes_the_report(
+  run_toml: Path,
+  out: Path,
+  monkeypatch: pytest.MonkeyPatch,
+  forbid_ollama: None,
+) -> None:
+  monkeypatch.setattr(runner, "make_llm", lambda cfg: Failing())
+  assert main(["run", str(run_toml), "--out", str(out)]) == 1
+  [folder] = list(out.iterdir())
+  assert "model down" in (folder / "report.html").read_text(encoding="utf-8")
+
+
+def test_run_that_cannot_write_the_report_returns_2(
+  run_toml: Path,
+  out: Path,
+  capsys: pytest.CaptureFixture[str],
+  monkeypatch: pytest.MonkeyPatch,
+  forbid_ollama: None,
+) -> None:
+  def broken(record: Any, path: Path) -> None:
+    raise RecordError(path, "no se puede escribir: disco lleno")
+
+  monkeypatch.setattr(runner, "write_report", broken)
+  assert main(["run", str(run_toml), "--out", str(out)]) == 2
+  assert "disco lleno" in capsys.readouterr().err
+  [folder] = list(out.iterdir())
+  assert (folder / "run.json").is_file()  # the results are not lost
+
+
+def test_render_writes_report_html_next_to_run_json(
+  run_json: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["render", str(run_json)]) == 0
+  captured = capsys.readouterr()
+  target = run_json.parent / "report.html"
+  assert captured.out == f"Informe: {target}\n"
+  assert captured.err == ""
+  assert target.read_text(encoding="utf-8").startswith("<!doctype html>")
+
+
+def test_render_output_equals_the_report_of_the_run(
+  run_toml: Path, out: Path, forbid_ollama: None
+) -> None:
+  assert main(["run", str(run_toml), "--out", str(out)]) == 0
+  [folder] = list(out.iterdir())
+  original = (folder / "report.html").read_bytes()
+  (folder / "report.html").unlink()
+  assert main(["render", str(folder / "run.json")]) == 0
+  assert (folder / "report.html").read_bytes() == original
+
+
+def test_render_out_writes_elsewhere_and_creates_folders(
+  run_json: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  target = tmp_path / "x" / "y" / "informe.html"
+  assert main(["render", str(run_json), "--out", str(target)]) == 0
+  assert capsys.readouterr().out == f"Informe: {target}\n"
+  assert target.is_file()
+  assert not (run_json.parent / "report.html").exists()
+
+
+def test_render_overwrites_an_existing_report(run_json: Path) -> None:
+  target = run_json.parent / "report.html"
+  target.write_text("old", encoding="utf-8")
+  assert main(["render", str(run_json)]) == 0
+  assert target.read_text(encoding="utf-8") != "old"
+
+
+def test_render_twice_gives_the_same_bytes(run_json: Path, tmp_path: Path) -> None:
+  first, second = tmp_path / "1.html", tmp_path / "2.html"
+  assert main(["render", str(run_json), "--out", str(first)]) == 0
+  assert main(["render", str(run_json), "--out", str(second)]) == 0
+  assert first.read_bytes() == second.read_bytes()
+
+
+def test_render_does_not_touch_run_json_or_run_toml(run_json: Path) -> None:
+  before = {p.name: p.read_bytes() for p in run_json.parent.iterdir()}
+  assert main(["render", str(run_json)]) == 0
+  after = {p.name: p.read_bytes() for p in run_json.parent.iterdir()}
+  assert after.pop("report.html")
+  assert after == before
+
+
+def test_render_works_with_a_relative_path(
+  run_json: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.chdir(run_json.parent)
+  assert main(["render", "run.json"]) == 0
+  assert (run_json.parent / "report.html").is_file()
+
+
+def test_render_missing_file_returns_2(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  missing = tmp_path / "nope.json"
+  assert main(["render", str(missing)]) == 2
+  captured = capsys.readouterr()
+  assert captured.out == ""
+  assert captured.err == f"error: {missing}: el archivo no existe\n"
+  assert not (tmp_path / "report.html").exists()
+
+
+@pytest.mark.parametrize(
+  ("content", "fragment"),
+  [
+    ("{", "JSON inválido"),
+    ("", "JSON inválido"),
+    ("[1, 2]", "debe ser un objeto"),
+    ("{}", "schema"),
+    ('{"schema": 99}', "no soportada"),
+    ('{"schema": "1"}', "entero"),
+    ('{"schema": true}', "entero"),
+    ('{"schema": 1, "x": NaN}', "JSON inválido"),
+  ],
+)
+def test_render_invalid_run_json_returns_2_and_writes_nothing(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str], content: str, fragment: str
+) -> None:
+  path = tmp_path / "run.json"
+  path.write_text(content, encoding="utf-8")
+  assert main(["render", str(path)]) == 2
+  captured = capsys.readouterr()
+  assert captured.err.startswith(f"error: {path}: ")
+  assert fragment in captured.err
+  assert captured.out == ""
+  assert [p.name for p in tmp_path.iterdir()] == ["run.json"]
+
+
+def test_render_non_utf8_run_json_returns_2(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  path = tmp_path / "run.json"
+  path.write_bytes(b'{"schema": 1, "t": "\xff"}')
+  assert main(["render", str(path)]) == 2
+  assert capsys.readouterr().err.startswith("error: ")
+
+
+def test_render_directory_as_run_json_returns_2(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["render", str(tmp_path)]) == 2
+  assert capsys.readouterr().err.startswith("error: ")
+
+
+def test_render_schema_valid_but_empty_record_returns_2_not_a_traceback(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  path = tmp_path / "run.json"
+  path.write_text('{"schema": 1}', encoding="utf-8")
+  assert main(["render", str(path)]) == 2
+  err = capsys.readouterr().err
+  assert err.startswith(f"error: {path}: el registro no tiene la forma esperada")
+  assert "KeyError" in err
+  assert not (tmp_path / "report.html").exists()
+
+
+@pytest.mark.parametrize("break_with", [None, "x", 5, []])
+def test_render_a_record_with_a_wrongly_shaped_section_returns_2(
+  run_json: Path, capsys: pytest.CaptureFixture[str], break_with: Any
+) -> None:
+  data = json.loads(run_json.read_text(encoding="utf-8"))
+  data["questions"][0]["spec"] = break_with
+  run_json.write_text(json.dumps(data), encoding="utf-8")
+  assert main(["render", str(run_json)]) == 2
+  assert capsys.readouterr().err.startswith("error: ")
+  assert not (run_json.parent / "report.html").exists()
+
+
+def test_render_a_lone_surrogate_in_the_record_returns_2_not_a_traceback(
+  run_json: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  text = run_json.read_text(encoding="utf-8")
+  run_json.write_text(
+    text.replace('"title": "Don Quijote"', '"title": "bad \\ud800"'), encoding="utf-8"
+  )
+  assert main(["render", str(run_json)]) == 2
+  assert capsys.readouterr().err.startswith("error: ")
+
+
+def test_render_unwritable_out_returns_2(
+  run_json: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["render", str(run_json), "--out", str(tmp_path)]) == 2  # a directory
+  err = capsys.readouterr().err
+  assert err.startswith("error: ")
+  assert "no se puede escribir" in err
+
+
+def test_render_empty_out_is_rejected_by_the_parser(
+  run_json: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["render", str(run_json), "--out", ""]) == 2
+  assert "--out" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+  "argv", [["render"], ["render", "a.json", "b.json"], ["render", "a.json", "--nope"]]
+)
+def test_render_usage_errors_return_2(
+  argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(argv) == 2
+  assert "usage:" in capsys.readouterr().err
+
+
+def test_render_help_is_in_spanish(capsys: pytest.CaptureFixture[str]) -> None:
+  assert main(["render", "--help"]) == 0
+  out = capsys.readouterr().out
+  assert "--out" in out
+  assert "report.html" in out
+  assert "RUN_JSON" in out
+
+
+def test_top_level_help_lists_render(capsys: pytest.CaptureFixture[str]) -> None:
+  assert main(["--help"]) == 0
+  assert "render" in capsys.readouterr().out
+
+
+def test_unexpected_exceptions_while_rendering_are_not_all_swallowed(
+  run_json: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  def boom(*args: Any, **kwargs: Any) -> None:
+    raise ZeroDivisionError("bug")
+
+  monkeypatch.setattr(cli, "write_report", boom)
+  with pytest.raises(ZeroDivisionError):
+    main(["render", str(run_json)])
+
+
+def test_render_through_python_dash_m(run_json: Path) -> None:
+  result = subprocess.run(
+    [sys.executable, "-m", "hermes_report", "render", str(run_json)],
+    capture_output=True,
+    text=True,
+    check=False,
+    timeout=120,
+  )
+  assert result.returncode == 0, result.stderr
+  assert result.stdout == f"Informe: {run_json.parent / 'report.html'}\n"

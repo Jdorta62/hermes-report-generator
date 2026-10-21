@@ -1,4 +1,4 @@
-"""Command line of the tool: ``hermes-report run RUN_TOML``."""
+"""Command line of the tool: ``hermes-report run`` and ``hermes-report render``."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from hermes_report.corpus import CorpusError
 from hermes_report.ingest import IngestError
 from hermes_report.providers import ProviderError
 from hermes_report.questions import QuestionsError
-from hermes_report.record import RecordError
+from hermes_report.record import RecordError, read_record
+from hermes_report.render import write_report
 from hermes_report.runner import RunError, run
 from hermes_report.store import StoreError
 
@@ -45,8 +46,8 @@ def _parser() -> argparse.ArgumentParser:
   run_parser = commands.add_parser(
     "run",
     help="ejecuta una batería de preguntas y guarda el registro de la ejecución",
-    description="Ejecuta las preguntas de un archivo de ejecución (TOML) "
-    "y guarda run.toml y run.json en una carpeta nueva.",
+    description="Ejecuta las preguntas de un archivo de ejecución (TOML) y guarda "
+    "run.json, run.toml y report.html en una carpeta nueva.",
   )
   run_parser.add_argument("run_toml", metavar="RUN_TOML", type=Path)
   run_parser.add_argument(
@@ -77,14 +78,46 @@ def _parser() -> argparse.ArgumentParser:
     action="store_true",
     help="ignora la caché de ingesta y recarga la colección",
   )
+  render_parser = commands.add_parser(
+    "render",
+    help="genera el informe HTML a partir de un run.json",
+    description="Lee un run.json y escribe el informe report.html, sin ejecutar nada.",
+  )
+  render_parser.add_argument("run_json", metavar="RUN_JSON", type=Path)
+  render_parser.add_argument(
+    "--out",
+    type=_non_empty_path,
+    metavar="PATH",
+    help="archivo HTML de salida (por defecto report.html junto al run.json)",
+  )
   return parser
+
+
+def _render(args: argparse.Namespace) -> int:
+  """The ``render`` command: write the report of a ``run.json``."""
+  out: Path = args.out or args.run_json.parent / "report.html"
+  try:
+    write_report(read_record(args.run_json), out)
+  except RecordError as exc:
+    print(f"error: {exc}", file=sys.stderr)
+    return 2
+  except (KeyError, TypeError, AttributeError, IndexError, ValueError) as exc:
+    print(
+      f"error: {args.run_json}: el registro no tiene la forma esperada "
+      f"({type(exc).__name__}: {exc})",
+      file=sys.stderr,
+    )
+    return 2
+  print(f"Informe: {out}")
+  return 0
 
 
 def main(argv: list[str] | None = None) -> int:
   """Run the ``hermes-report`` command line and return its exit code.
 
-  Exit codes: 0 when every question ran, 1 when some question raised, 2 for
-  invalid input, an unreachable service or a missing subcommand. Errors are
+  Exit codes: 0 when every question ran (or the report was written), 1 when
+  some question raised, 2 for invalid input, an unreachable service, a run
+  record that cannot be read or rendered, or a missing subcommand. Errors are
   printed on stderr as ``error: <message>``.
 
   Effects: io, net, mut
@@ -94,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
   except SystemExit as exc:
     return exc.code if isinstance(exc.code, int) else 2
+  if args.command == "render":
+    return _render(args)
   if args.command != "run":
     parser.print_help()
     return 2
@@ -114,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     return 2
   print(f"Carpeta: {outcome.folder}")
   print(f"Registro: {outcome.folder / 'run.json'}")
+  print(f"Informe: {outcome.folder / 'report.html'}")
   if outcome.failed:
     print(f"{outcome.failed} pregunta(s) con error", file=sys.stderr)
     return 1

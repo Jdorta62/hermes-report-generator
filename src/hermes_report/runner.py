@@ -40,6 +40,7 @@ from hermes_report.record import (
   message_record,
   write_record,
 )
+from hermes_report.render import write_report
 from hermes_report.store import (
   CollectionInfo,
   collection_name,
@@ -87,10 +88,12 @@ class RunOutcome:
 def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcome:
   """Run every selected question through the pipeline and write the run folder.
 
-  The folder holds ``run.toml`` (the resolved run file) and ``run.json`` (the
-  run record). Pipeline errors of one question are recorded and do not stop
-  the run; the judge runs only for a question that has a generation result and
-  no error, and an unexpected failure of the judge is recorded in its record.
+  The folder holds ``run.json`` (the run record), ``run.toml`` (the resolved
+  run file) and ``report.html`` (the report), written in that order so that a
+  late failure never loses the results. Pipeline errors of one question are
+  recorded and do not stop the run; the judge runs only for a question that has
+  a generation result and no error, and an unexpected failure of the judge is
+  recorded in its record.
 
   Args:
     config: The resolved run, with its overrides applied.
@@ -104,7 +107,7 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
     ProviderError: if Ollama or another provider fails or lacks a model.
     IngestError: if a document cannot be ingested.
     StoreError: if Qdrant cannot be used.
-    RecordError: if ``run.json`` cannot be written.
+    RecordError: if ``run.json`` or ``report.html`` cannot be written.
 
   Effects: io, net, mut
   """
@@ -326,7 +329,10 @@ def _collection_record(info: CollectionInfo) -> CollectionRecord:
 
 
 def _write(config: RunConfig, record: RunRecord, start: datetime) -> Path:
-  """Create the run folder (a ``-2``, ``-3``... suffix if taken) and fill it."""
+  """Create the run folder (a ``-2``, ``-3``... suffix if taken) and fill it.
+
+  ``run.json`` goes first: it holds the results, the other files are copies.
+  """
   base = config.output.dir
   name = f"{start:%Y%m%d-%H%M%S}-{slug(config.title)}"
   try:
@@ -340,8 +346,12 @@ def _write(config: RunConfig, record: RunRecord, start: datetime) -> Path:
         number += 1
         continue
       break
-    (folder / "run.toml").write_text(config.to_toml(), encoding="utf-8")
   except OSError as exc:
     raise RunError(f"no se puede escribir la carpeta de salida {base}: {exc}") from exc
   write_record(record, folder / "run.json")
+  try:
+    (folder / "run.toml").write_text(config.to_toml(), encoding="utf-8")
+  except OSError as exc:
+    raise RunError(f"no se puede escribir {folder / 'run.toml'}: {exc}") from exc
+  write_report(record, folder / "report.html")
   return folder

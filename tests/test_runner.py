@@ -35,6 +35,7 @@ from hermes_report.providers import (
 )
 from hermes_report.questions import QuestionsError
 from hermes_report.record import RecordError, read_record
+from hermes_report.render import render_run
 from hermes_report.runner import RunError, RunOutcome, run
 from hermes_report.store import StoreError, slug
 
@@ -94,7 +95,11 @@ def test_folder_layout(config: RunConfig, out: Path, forbid_ollama: Any) -> None
   outcome = run(config, progress=lambda line: None)
   assert outcome.folder.parent == out
   assert re.fullmatch(r"\d{8}-\d{6}-don_quijote", outcome.folder.name)
-  assert sorted(p.name for p in outcome.folder.iterdir()) == ["run.json", "run.toml"]
+  assert sorted(p.name for p in outcome.folder.iterdir()) == [
+    "report.html",
+    "run.json",
+    "run.toml",
+  ]
   assert outcome.failed == 0
 
 
@@ -227,6 +232,72 @@ def test_failing_record_write_stays_a_record_error(
   monkeypatch.setattr(runner, "write_record", broken)
   with pytest.raises(RecordError):
     run(config, progress=lambda line: None)
+
+
+def test_files_are_written_in_the_order_run_json_run_toml_report_html(
+  config: RunConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  present: dict[str, list[str]] = {}
+  original = Path.write_text
+
+  def spy(self: Path, *args: Any, **kwargs: Any) -> int:
+    if self.name in {"run.toml", "report.html"}:
+      present[self.name] = sorted(p.name for p in self.parent.iterdir())
+    return original(self, *args, **kwargs)
+
+  monkeypatch.setattr(Path, "write_text", spy)
+  run(config, progress=lambda line: None)
+  assert present == {
+    "run.toml": ["run.json"],
+    "report.html": ["run.json", "run.toml"],
+  }
+
+
+def test_a_failing_report_write_keeps_run_json_and_run_toml(
+  config: RunConfig, out: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  def broken(record: Any, path: Path) -> None:
+    raise RecordError(path, "no se puede escribir")
+
+  monkeypatch.setattr(runner, "write_report", broken)
+  with pytest.raises(RecordError, match="report.html"):
+    run(config, progress=lambda line: None)
+  [folder] = list(out.iterdir())
+  assert sorted(p.name for p in folder.iterdir()) == ["run.json", "run.toml"]
+  assert read_record(folder / "run.json")["questions"]
+
+
+def test_a_failing_run_toml_write_keeps_run_json(
+  config: RunConfig, out: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  original = Path.write_text
+
+  def selective(self: Path, *args: Any, **kwargs: Any) -> int:
+    if self.name == "run.toml":
+      raise PermissionError("denied")
+    return original(self, *args, **kwargs)
+
+  monkeypatch.setattr(Path, "write_text", selective)
+  with pytest.raises(RunError, match="run.toml"):
+    run(config, progress=lambda line: None)
+  [folder] = list(out.iterdir())
+  assert [p.name for p in folder.iterdir()] == ["run.json"]
+
+
+def test_report_html_is_the_render_of_run_json(config: RunConfig) -> None:
+  outcome = run(config, progress=lambda line: None)
+  assert (outcome.folder / "report.html").read_text(encoding="utf-8") == render_run(
+    read_record(outcome.folder / "run.json")
+  )
+
+
+def test_in_memory_run_emits_no_payload_index_warning(
+  config: RunConfig, fresh_qdrant_warnings: None
+) -> None:
+  with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    run(config, progress=lambda line: None)
+  assert [str(w.message) for w in caught if "Payload indexes" in str(w.message)] == []
 
 
 # ---------------------------------------------------------------- run.json

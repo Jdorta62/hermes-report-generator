@@ -1,0 +1,178 @@
+"""HTML helpers shared by every renderer of the report, and the page itself."""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Sequence
+from html import escape
+from importlib import resources
+from typing import Any, Final, Literal
+
+__all__ = [
+  "GENERATION_LABELS",
+  "JUDGE_LABELS",
+  "RULE_LABELS",
+  "RULE_TONES",
+  "answer_html",
+  "chip",
+  "esc",
+  "json_block",
+  "page",
+  "section",
+  "seconds",
+  "status_pill",
+]
+
+RULE_LABELS: Final = {
+  "error": "error",
+  "correct_refusal": "rechazo correcto",
+  "invented_answer": "inventa una respuesta",
+  "correct": "acierto",
+  "correct_without_evidence": (
+    "acierto sin evidencia en el contexto (¿memoria del modelo?)"
+  ),
+  "budget_failure": "fallo de presupuesto: se recuperó y se descartó",
+  "retrieval_failure": "fallo de recuperación",
+  "generation_refused": "fallo de generación: se niega con la evidencia delante",
+  "generation_wrong": "fallo de generación: responde mal",
+  "unrated": "sin valorar: la pregunta no tiene palabras clave",
+}
+RULE_TONES: Final = {
+  "error": "bad",
+  "correct_refusal": "good",
+  "invented_answer": "bad",
+  "correct": "good",
+  "correct_without_evidence": "meh",
+  "budget_failure": "bad",
+  "retrieval_failure": "bad",
+  "generation_refused": "bad",
+  "generation_wrong": "bad",
+  "unrated": "info",
+}
+JUDGE_LABELS: Final = {
+  "correct": "correcta",
+  "partial": "parcial",
+  "incorrect": "incorrecta",
+}
+GENERATION_LABELS: Final = {
+  "answered": "respondida",
+  "insufficient": "sin información suficiente",
+  "no_context": "sin contexto",
+  "error": "error",
+}
+
+_JUDGE_TONES: Final = {"correct": "good", "partial": "meh", "incorrect": "bad"}
+_GENERATION_TONES: Final = {
+  "answered": "good",
+  "insufficient": "meh",
+  "no_context": "info",
+  "error": "bad",
+}
+_CITATION = re.compile(r"\[(\d+)\]")
+_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+_ASSETS = resources.files("hermes_report.render") / "assets"
+
+
+def esc(text: object) -> str:
+  """Escape ``text`` (``str()`` of it when it is not a string) for HTML."""
+  return escape(text if isinstance(text, str) else str(text))
+
+
+def section(anchor: str, step: str, title: str, summary: str, body: str) -> str:
+  """A collapsible phase card: a step mark, a title and a summary above its body.
+
+  ``anchor``, ``step``, ``title`` and ``summary`` are plain text and are
+  escaped; ``body`` is HTML the caller has already escaped.
+  """
+  return (
+    f'<details class="phase" id="{esc(anchor)}" open><summary>'
+    f'<span class="step">{esc(step)}</span>'
+    f'<span class="ph-title">{esc(title)}</span>'
+    f'<span class="ph-sum">{esc(summary)}</span></summary>'
+    f'<div class="ph-body">{body}</div></details>'
+  )
+
+
+def chip(anchor: str, title: str, summary: str) -> str:
+  """A flow chip linking to the phase card ``anchor``; its texts are escaped."""
+  return (
+    f'<a class="chip" href="#{esc(anchor)}"><b>{esc(title)}</b>'
+    f"<span>{esc(summary)}</span></a>"
+  )
+
+
+def status_pill(
+  code: str | None, kind: Literal["rule", "judge", "generation"] = "rule"
+) -> str:
+  """A coloured pill with the Spanish label of ``code``; a dash for ``None``.
+
+  ``kind`` says which family the code belongs to: a rule verdict, a judge
+  verdict or a generation status. A code of that family that is not known
+  keeps its own text and the neutral tone.
+  """
+  if code is None:
+    return '<span class="muted">—</span>'
+  labels, tones = {
+    "rule": (RULE_LABELS, RULE_TONES),
+    "judge": (JUDGE_LABELS, _JUDGE_TONES),
+    "generation": (GENERATION_LABELS, _GENERATION_TONES),
+  }[kind]
+  tone = tones.get(code, "info")
+  return f'<span class="status {tone}">{esc(labels.get(code, code))}</span>'
+
+
+def answer_html(text: str) -> str:
+  """The answer text escaped, with bold and the ``[n]`` markers as chips."""
+  html = esc(text)
+  html = _BOLD.sub(r"<strong>\1</strong>", html)
+  return _CITATION.sub(r'<span class="cite">\1</span>', html)
+
+
+def json_block(value: Any) -> str:
+  """``value`` as an indented, escaped JSON text block."""
+  text = json.dumps(value, ensure_ascii=False, indent=2)
+  return f'<pre class="text json">{esc(text)}</pre>'
+
+
+def seconds(value: float) -> str:
+  """A duration with one decimal, as ``"4.2 s"``."""
+  return f"{value:.1f} s"
+
+
+def page(
+  title: str,
+  meta: str,
+  tabs: Sequence[tuple[str, str, str]],
+  panels: Sequence[tuple[str, str]],
+) -> str:
+  """Assemble the self-contained document: styles and script inlined.
+
+  Args:
+    title: The report title, plain text.
+    meta: The meta line under the title, HTML the caller has already escaped.
+    tabs: One ``(key, label, hover text)`` per tab button, in order.
+    panels: One ``(key, body HTML)`` per tab, wrapped in a ``panel`` section
+      with ``id="tab-<key>"``.
+  """
+  buttons = "".join(
+    f'<button class="tab" data-key="{esc(key)}" title="{esc(hover)}">'
+    f"{esc(label)}</button>"
+    for key, label, hover in tabs
+  )
+  sections = "".join(
+    f'<section class="panel" id="tab-{esc(key)}" data-key="{esc(key)}">{body}</section>'
+    for key, body in panels
+  )
+  css = (_ASSETS / "report.css").read_text(encoding="utf-8")
+  script = (_ASSETS / "report.js").read_text(encoding="utf-8")
+  return (
+    '<!doctype html>\n<html lang="es">\n<head>\n<meta charset="utf-8">\n'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+    f"<title>Hermes Report · {esc(title)}</title>\n<style>\n{css}</style>\n"
+    "</head>\n<body>\n<header>\n"
+    f"  <h1>Hermes Report <span>· {esc(title)}</span></h1>\n"
+    f'  <div class="meta">{meta}</div>\n  <nav>{buttons}</nav>\n</header>\n'
+    f"<main>{sections}</main>\n<script>\n{script}</script>\n</body>\n</html>\n"
+  )

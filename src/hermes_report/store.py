@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -180,8 +181,13 @@ def _rebuild(client: QdrantClient, name: str, points: Sequence[QdrantPoint]) -> 
       size=len(points[0].vector), distance=models.Distance.COSINE
     ),
   )
-  client.create_payload_index(name, "doc_id", models.PayloadSchemaType.KEYWORD)
-  client.create_payload_index(name, "chunk_index", models.PayloadSchemaType.INTEGER)
+  with warnings.catch_warnings():
+    # The in-process client ignores indexes and says so; a run reads the same.
+    warnings.filterwarnings(
+      "ignore", message="Payload indexes have no effect", category=UserWarning
+    )
+    client.create_payload_index(name, "doc_id", models.PayloadSchemaType.KEYWORD)
+    client.create_payload_index(name, "chunk_index", models.PayloadSchemaType.INTEGER)
   for start in range(0, len(points), _BATCH):
     client.upsert(
       name,

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import shutil
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from qdrant_client import QdrantClient
+from qdrant_client.common import client_warnings
 
 from hermes_report.config import RunConfig, load_config
 from hermes_report.corpus import load_corpus
@@ -28,6 +28,16 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
   """No test sees the developer's QDRANT_URL / OLLAMA_MODEL."""
   monkeypatch.delenv("QDRANT_URL", raising=False)
   monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+
+
+@pytest.fixture
+def fresh_qdrant_warnings(monkeypatch: pytest.MonkeyPatch) -> None:
+  """Forget which one-time qdrant-client warnings were already shown.
+
+  The client warns about payload indexes once per process, so a test that
+  asserts "no such warning" would pass vacuously if an earlier test used it.
+  """
+  monkeypatch.setattr(client_warnings, "SEEN_MESSAGES", set())
 
 
 @pytest.fixture
@@ -87,9 +97,7 @@ def pipeline_env(tmp_path_factory: pytest.TempPathFactory) -> PipelineEnv:
     tmp_path_factory.mktemp("cache"),
   )
   qdrant = QdrantClient(":memory:")
-  with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    ensure_collection(qdrant, COLLECTION, ingestion.points, ":memory:")
+  ensure_collection(qdrant, COLLECTION, ingestion.points, ":memory:")
   return PipelineEnv(
     config, qdrant, COLLECTION, embedder, load_questions(config.questions.file)
   )
