@@ -5,3 +5,5 @@ hermes_report.record  :: PASS  100%  task=1.1.2  2026-10-21
 hermes_report.providers  :: PASS  100%  task=2.2.1  2026-10-21
 hermes_report.ingest  :: PASS  100%  task=2.2.2  2026-10-21
 hermes_report.store  :: PASS  100%  task=2.2.2  2026-10-21
+hermes_report.trace  :: PASS  100%  task=2.2.3  2026-10-21
+hermes_report.pipeline  :: PASS  98%  task=2.2.3  2026-10-21
