@@ -6,3 +6,7 @@
 # contract: !=raises ~=effects(io|net|mut|gpu|proc) ::=summary req:=precondition ex:=usage reg:=registry[key] main:=CLI entry
 # @reexport=public name imported from another module
 # @deps=project modules imported @ext=third-party packages imported
+
+@mod hermes_report.config :: Run file: the TOML description of a run, validated and with defaults applied -> hermes_report/config.api
+@mod hermes_report.corpus :: Markdown corpus: the documents of a folder, hashed and sorted -> hermes_report/corpus.api
+@mod hermes_report.questions :: Questions file: the JSON battery with expected answers and its rule checks -> hermes_report/questions.api
