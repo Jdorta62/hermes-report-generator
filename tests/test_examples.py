@@ -218,16 +218,21 @@ def test_quijote_questions_are_valid_for_the_loader_when_the_corpus_exists() -> 
   assert len(questions.questions) == 11
 
 
-def test_quijote_run_file_has_the_documented_values() -> None:
-  config = load_config(QUIJOTE / "run.toml")
+def test_quijote_run_file_has_the_documented_values(tmp_path: Path) -> None:
+  # The corpus is git-ignored (prepare.py builds it), so the run file is read
+  # from a copy next to an empty stand-in corpus folder.
+  shutil.copy(QUIJOTE / "run.toml", tmp_path / "run.toml")
+  shutil.copy(QUIJOTE / "preguntas.json", tmp_path / "preguntas.json")
+  (tmp_path / "corpus").mkdir()
+  config = load_config(tmp_path / "run.toml")
   assert config.embedding.provider == "ollama"
   assert config.embedding.model == "nomic-embed-text"
   assert config.generation.provider == "ollama"
   assert config.generation.model == "qwen3:4b"
   assert config.retrieval.top_k == 10
   assert config.enrich.max_context_tokens == 3000
-  assert config.corpus.dir == QUIJOTE / "corpus"
-  assert config.questions.file == QUIJOTE / "preguntas.json"
+  assert config.corpus.dir == tmp_path / "corpus"
+  assert config.questions.file == tmp_path / "preguntas.json"
 
 
 # --------------------------------------------------------------------- demo
