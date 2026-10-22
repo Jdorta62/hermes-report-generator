@@ -86,6 +86,14 @@ C JudgeRecord(TypedDict) :: The LLM judge verdict of one answer
   a verdict: str | None; reason: str | None; model: str; seconds: float
   a messages: list[MessageRecord]; raw: str | None; error: str | None
 
+C JudgeCallRecord(TypedDict) :: One judge call made by a metric operation
+  a purpose: str; messages: list[MessageRecord]; raw: str | None; error: str | None
+  a seconds: float
+
+C MetricResultRecord(TypedDict) :: The outcome of one metric family for one question
+  a name: str; status: str; scores: dict[str, float | None]; details: dict[str, Any]
+  a calls: list[JudgeCallRecord]; error: str | None; seconds: float
+
 C QuestionRecord(TypedDict) :: Everything that happened to one question
   a spec: dict[str, Any]; query_id: str; seconds: float; error: str | None
   a retrieval: RetrievalRecord | None; enrich: EnrichRecord | None; generation: GenerationRecord | None; rules: RuleRecord | None

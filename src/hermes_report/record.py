@@ -27,9 +27,11 @@ __all__ = [
   "GenerationRecord",
   "IngestDocumentRecord",
   "IngestRecord",
+  "JudgeCallRecord",
   "JudgeRecord",
   "LLMCallRecord",
   "MessageRecord",
+  "MetricResultRecord",
   "PieceRecord",
   "PointRecord",
   "QuestionRecord",
@@ -299,6 +301,28 @@ class JudgeRecord(TypedDict):
   messages: list[MessageRecord]
   raw: str | None
   error: str | None
+
+
+class JudgeCallRecord(TypedDict):
+  """One judge call made by a metric operation."""
+
+  purpose: str
+  messages: list[MessageRecord]
+  raw: str | None
+  error: str | None
+  seconds: float
+
+
+class MetricResultRecord(TypedDict):
+  """The outcome of one metric family for one question."""
+
+  name: str
+  status: str
+  scores: dict[str, float | None]
+  details: dict[str, Any]
+  calls: list[JudgeCallRecord]
+  error: str | None
+  seconds: float
 
 
 class QuestionRecord(TypedDict):
