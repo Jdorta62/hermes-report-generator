@@ -1,0 +1,22 @@
+# Demo con los modelos por defecto: Ollama (nomic-embed-text y qwen3:4b) y Qdrant.
+# Uso: uv run hermes-report run examples/demo/run.toml
+title = "Demo de Nébula Logística"
+description = "Cuatro documentos inventados y siete preguntas"
+
+[corpus]
+dir = "corpus"
+
+[questions]
+file = "preguntas.json"
+
+[ingest]
+max_chunk_size = 300
+
+[embedding]
+provider = "ollama"
+model = "nomic-embed-text"
+
+[generation]
+provider = "ollama"
+model = "qwen3:4b"
+insufficient_message = "No encuentro esa información en las fuentes."

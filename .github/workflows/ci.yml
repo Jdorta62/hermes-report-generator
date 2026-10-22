@@ -9,8 +9,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Otherwise its job-token auth header overrides the dependency token.
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+      # The five Hermes modules are private repositories (hermes-core over
+      # https, the others over ssh) and the job token cannot read them. Both
+      # URL forms are rewritten to https with a read-only token per owner,
+      # since a fine-grained token belongs to a single owner.
+      # FU-1: secrets HERMES_CORE_TOKEN (Jdorta62 repositories) and
+      # HERMES_INGESTION_TOKEN (hermes-ingestion organisation).
+      - run: >-
+          git config --global --add
+          url."https://x-access-token:${{ secrets.HERMES_CORE_TOKEN }}@github.com/Jdorta62/".insteadOf
+          "ssh://git@github.com/Jdorta62/"
+      - run: >-
+          git config --global --add
+          url."https://x-access-token:${{ secrets.HERMES_CORE_TOKEN }}@github.com/Jdorta62/".insteadOf
+          "https://github.com/Jdorta62/"
+      - run: >-
+          git config --global --add
+          url."https://x-access-token:${{ secrets.HERMES_INGESTION_TOKEN }}@github.com/hermes-ingestion/".insteadOf
+          "ssh://git@github.com/hermes-ingestion/"
+      - run: >-
+          git config --global --add
+          url."https://x-access-token:${{ secrets.HERMES_INGESTION_TOKEN }}@github.com/hermes-ingestion/".insteadOf
+          "https://github.com/hermes-ingestion/"
       - run: uv sync
       - run: uv run just check
