@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.metadata
 import json
+import os
 import re
 import warnings
 from collections.abc import Callable, Iterator, Sequence
@@ -238,14 +239,25 @@ def test_files_are_written_in_the_order_run_json_run_toml_report_html(
   config: RunConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   present: dict[str, list[str]] = {}
-  original = Path.write_text
+  original_write = Path.write_text
+  original_replace = os.replace
 
-  def spy(self: Path, *args: Any, **kwargs: Any) -> int:
-    if self.name in {"run.toml", "report.html"}:
+  def spy_write(self: Path, *args: Any, **kwargs: Any) -> int:
+    if self.name == "run.toml":
       present[self.name] = sorted(p.name for p in self.parent.iterdir())
-    return original(self, *args, **kwargs)
+    return original_write(self, *args, **kwargs)
 
-  monkeypatch.setattr(Path, "write_text", spy)
+  # The report is written through a temporary file and moved over its name: the
+  # moment it appears is the ``os.replace``, whatever the temporary is called.
+  def spy_replace(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+    if Path(dst).name == "report.html":
+      present["report.html"] = sorted(
+        p.name for p in Path(dst).parent.iterdir() if p != Path(src)
+      )
+    original_replace(src, dst, *args, **kwargs)
+
+  monkeypatch.setattr(Path, "write_text", spy_write)
+  monkeypatch.setattr(os, "replace", spy_replace)
   run(config, progress=lambda line: None)
   assert present == {
     "run.toml": ["run.json"],

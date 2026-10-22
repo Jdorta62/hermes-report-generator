@@ -10,4 +10,5 @@ C QuestionContext :: What every question tab shares: the Qdrant points and the t
   m tokens(text: str) -> int :: The token count of ``text``
 
 f disagree(item: QuestionRecord) -> bool :: The rules say right and the judge wrong, or the other way round
+f chunk_usage(item: QuestionRecord) -> dict[str, list[str]] :: The chunk ids a question touched, by state, each sorted
 f question_panel(item: QuestionRecord, question_id: str, ctx: QuestionContext) -> str :: The whole tab of one question, from its record alone

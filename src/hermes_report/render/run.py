@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import statistics
 from collections.abc import Sequence
 from pathlib import Path
@@ -23,13 +25,19 @@ from hermes_report.render.html import (
   esc,
   grid,
   json_block,
+  json_script,
   page,
   seconds,
   status_pill,
   table,
   yes_no,
 )
-from hermes_report.render.question import QuestionContext, disagree, question_panel
+from hermes_report.render.question import (
+  QuestionContext,
+  chunk_usage,
+  disagree,
+  question_panel,
+)
 
 __all__ = ["render_run", "write_report"]
 
@@ -47,7 +55,9 @@ def render_run(record: RunRecord, *, token_counter: TokenCounter | None = None) 
 
   The result depends only on ``record`` and the token counter: the same record
   and counter always give the same bytes, and nothing in the page refers to an
-  external URL.
+  external URL. The Qdrant points travel once, as JSON in the page, and the
+  explorer and the raw documents of each question are drawn from them by the
+  script.
 
   Args:
     record: The run record.
@@ -69,7 +79,7 @@ def render_run(record: RunRecord, *, token_counter: TokenCounter | None = None) 
   panels = [
     ("resumen", _summary_panel(record, ids)),
     ("corpus", _corpus_panel(record)),
-    ("chunks", '<div id="explorer"></div>'),
+    ("chunks", _chunks_panel()),
   ]
   for question_id, item in zip(ids, questions, strict=True):
     text = str(item["spec"].get("question", ""))
@@ -82,11 +92,20 @@ def render_run(record: RunRecord, *, token_counter: TokenCounter | None = None) 
       )
     )
     panels.append((key, question_panel(item, question_id, context)))
-  return page(record["title"], _meta(record, context.counter_name), tabs, panels)
+  # The points are written once and drawn by ``report.js``; the usage is one
+  # list of chunk ids per state and question, so a corpus is never copied per tab.
+  data = json_script("hr-points", record["points"]) + json_script(
+    "hr-usage",
+    {qid: chunk_usage(item) for qid, item in zip(ids, questions, strict=True)},
+  )
+  return page(record["title"], _meta(record, context.counter_name), tabs, panels, data)
 
 
 def write_report(record: RunRecord, path: Path) -> None:
   """Render ``record`` and write it as UTF-8 HTML, creating the parent folder.
+
+  The report is written to a temporary file in the same folder and then moved
+  over ``path``, so a failure keeps the previous report intact.
 
   Raises:
     RecordError: if the file cannot be written or the report cannot be encoded
@@ -95,15 +114,21 @@ def write_report(record: RunRecord, path: Path) -> None:
   Effects: io, net
   """
   html = render_run(record)
+  temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
   try:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(html, encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as handle:
+      handle.write(html)
+    os.replace(temporary, path)
   except UnicodeError as exc:
     raise RecordError(
       path, f"el informe contiene texto que no se puede codificar en UTF-8: {exc}"
     ) from None
   except OSError as exc:
     raise RecordError(path, f"no se puede escribir: {exc}") from None
+  finally:
+    with contextlib.suppress(OSError):
+      temporary.unlink(missing_ok=True)
 
 
 # --- shared bits ---------------------------------------------------------------
@@ -138,6 +163,22 @@ def _meta(record: RunRecord, counter_name: str) -> str:
     f" · Qdrant: <b>{esc(collection['url'])}</b> / {esc(collection['name'])}"
     f" · Tokens: <b>{esc(counter_name)}</b>"
     f" · {esc(record['started_at'])} · {esc(seconds(record['seconds']))}"
+  )
+
+
+# --- Chunks en Qdrant ---------------------------------------------------------------
+
+
+def _chunks_panel() -> str:
+  return (
+    _head(
+      "Chunks en Qdrant",
+      "Todos los chunks de la colección tal como están guardados: texto, payload y "
+      "vector. Marca una pregunta para ver cómo los usó.",
+    )
+    + '<div id="explorer"><noscript><p class="muted">El explorador de chunks '
+    "necesita JavaScript. El resto del informe se puede leer sin él.</p>"
+    "</noscript></div>"
   )
 
 

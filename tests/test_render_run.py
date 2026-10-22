@@ -101,6 +101,24 @@ def rows_of(panel: str) -> list[str]:
   return re.findall(r"<tr>(?!<th).*?</tr>", panel, re.S)
 
 
+def active_scripts(page: Page) -> list[dict[str, str | None]]:
+  """The ``<script>`` elements that run: those without a ``type``."""
+  return [attrs for attrs in page.tags("script") if "type" not in attrs]
+
+
+def json_blocks(text: str) -> dict[str, Any]:
+  """The embedded ``application/json`` blocks, parsed as the browser would.
+
+  The pattern stops at the first ``</script>``, so a block that a payload could
+  close early would come back truncated and fail to parse.
+  """
+  found = re.findall(
+    r'<script type="application/json" id="([^"]+)">(.*?)</script>', text, re.S
+  )
+  assert len({name for name, _ in found}) == len(found), "a block appears twice"
+  return {name: json.loads(body) for name, body in found}
+
+
 @pytest.fixture(scope="module")
 def real_record(tmp_path_factory: pytest.TempPathFactory) -> RunRecord:
   """A whole offline run over the sample project."""
@@ -226,16 +244,41 @@ def test_tabs_are_compact_above_six_questions(
     assert all(label.startswith("¿Cuántos") for label in labels)
 
 
-def test_chunks_panel_is_only_the_empty_explorer(report: str) -> None:
-  assert panel_of(report, "chunks") == '<div id="explorer"></div>'
+def test_chunks_panel_is_a_heading_and_the_explorer_with_a_spanish_notice(
+  report: str,
+) -> None:
+  panel = panel_of(report, "chunks")
+  assert panel.startswith('<div class="sc-head"><h2>Chunks en Qdrant</h2></div>')
+  # the explorer is empty server side: only the notice for browsers without script
+  explorer = re.search(r'<div id="explorer">(.*?)</div>', panel, re.S)
+  assert explorer
+  assert re.fullmatch(
+    r"<noscript><p [^>]*>[^<]*JavaScript[^<]*</p></noscript>", explorer[1]
+  )
+  assert "El resto del informe se puede leer sin él" in explorer[1]
   assert report.count('id="explorer"') == 1
+  # the chunks themselves are not in the panel: the script draws them
+  assert "chunk-card" not in panel
 
 
-def test_exactly_one_active_script_and_one_style(report: str) -> None:
+def test_three_scripts_two_of_them_json_and_one_style_that_matters(
+  report: str,
+) -> None:
   page = parse(report)
-  assert len(page.tags("script")) == 1
-  assert len(page.tags("style")) == 1
-  assert page.tags("script")[0] == {}
+  scripts = page.tags("script")
+  assert len(scripts) == 3
+  assert [a.get("id") for a in scripts if a.get("type") == "application/json"] == [
+    "hr-points",
+    "hr-usage",
+  ]
+  assert len(active_scripts(page)) == 1
+  assert active_scripts(page)[0] == {}
+  # The data comes before the script that reads it, and each block is unique.
+  assert report.index('id="hr-points"') < report.index('id="hr-usage"')
+  assert report.index('id="hr-usage"') < report.index("<script>\n")
+  # one stylesheet, plus the small one inside <noscript> that shows every panel
+  assert len(page.tags("style")) == 2
+  assert report.count("<noscript><style>") == 1
 
 
 def test_page_is_a_utf8_spanish_document(report: str) -> None:
@@ -851,9 +894,12 @@ def test_hostile_text_is_escaped_everywhere(record: RunRecord) -> None:
   # No element or attribute that the hostile text could have introduced.
   assert page.tags("img") == []
   assert all(not any(name.startswith("on") for name in a) for _, a in page.elements)
-  assert len(page.tags("script")) == 1
+  assert len(active_scripts(page)) == 1
+  assert len(page.tags("script")) == 3
   assert "<script>alert" not in text
-  assert "onerror=alert(1)>" not in text.replace("onerror=alert(1)&gt;", "")
+  # the data blocks carry the raw text, but inert: the page outside them is escaped
+  markup = re.sub(r'<script type="application/json".*?</script>', "", text, flags=re.S)
+  assert "onerror=alert(1)>" not in markup.replace("onerror=alert(1)&gt;", "")
   # The hostile text is present, as text, many times.
   assert html_lib.escape(HOSTILE) in text
   assert text.count(html_lib.escape(HOSTILE)) > 20
@@ -884,9 +930,13 @@ def test_script_closing_sequence_in_data_cannot_end_the_inline_script(
 ) -> None:
   record["config"]["extra"] = "</script><script>alert(1)</script>"
   record["questions"][0]["judge"]["raw"] = "</script>"  # type: ignore[index]
+  record["points"][0]["payload"]["text"] = "</script><script>alert(1)</script>"
   text = render_run(record)
-  assert text.count("</script>") == 1
+  # the active script and the two data blocks: one closing tag each, nothing more
+  assert text.count("</script>") == 3
   assert text.count("<script>") == 1
+  assert text.count('<script type="application/json"') == 2
+  assert len(json_blocks(text)) == 2
 
 
 def test_hostile_pairs_in_the_answer_do_not_unbalance_the_markup(
@@ -2151,10 +2201,6 @@ def test_llm_call_with_missing_model_and_tokens_shows_placeholders(
   assert "prompt — · respuesta —" in body
 
 
-@pytest.mark.xfail(
-  strict=True,
-  reason="`or` treats a real count of 0 as missing: completion_tokens=0 shows a dash",
-)
 def test_llm_zero_token_counts_are_real_numbers_not_missing(record: RunRecord) -> None:
   generation = record["questions"][0]["generation"]
   assert generation
@@ -2229,7 +2275,11 @@ def test_result_citations_table_maps_numbers_to_chunk_labels_and_source(
   rows = rows_of(body)
   assert len(rows) == 3
   assert '<span class="cite">1</span>' in rows[0]
-  assert "<code>x.md#2</code> <code>x.md#3</code>" in rows[0]
+  # each label is a link to the explorer card; the labels still read as before
+  assert re.findall(r"<code>(.*?)</code>", rows[0]) == ["x.md#2", "x.md#3"]
+  assert rows[0].count("</a> <a ") == 1
+  assert 'href="#chunks?doc=x.md&amp;q=q01&amp;chunk=a"' in rows[0]
+  assert 'href="#chunks?doc=x.md&amp;q=q01&amp;chunk=b"' in rows[0]
   assert "<td>x.md</td>" in rows[0]
   assert "<code>y.md#0</code>" in rows[1] and "<td>y.md</td>" in rows[1]
   # a citation whose number has no source piece, and an unknown chunk id, survive
@@ -2585,10 +2635,6 @@ def test_document_map_tooltip_is_index_heading_path_and_160_char_preview(
   assert rows["a.md"]["cells"][3]["title"] == "#3 · texto del chunk"
 
 
-@pytest.mark.xfail(
-  strict=True,
-  reason="a payload whose text is None prints the word None in the tooltip",
-)
 def test_document_map_tooltip_survives_odd_payloads(record: RunRecord) -> None:
   points = [
     pt("p0", "a.md", 0, text=""),
@@ -2798,7 +2844,8 @@ def test_hostile_text_in_every_phase_section_is_escaped(record: RunRecord) -> No
   text = render_run(hostile_phases(record), token_counter=FAKE)
   page = parse(text)
   assert page.tags("img") == []
-  assert len(page.tags("script")) == 1
+  assert len(active_scripts(page)) == 1
+  assert len(page.tags("script")) == 3
   assert all(not any(name.startswith("on") for name in a) for _, a in page.elements)
   assert "<script>alert" not in text
   assert text.count(html_lib.escape(HOSTILE)) > 40
@@ -2836,7 +2883,8 @@ def test_hostile_json_block_cannot_close_the_script_or_pre(record: RunRecord) ->
   result["extra"] = "</pre><script>alert(2)</script>"
   text = render_run(record, token_counter=FAKE)
   assert text.count("<script>") == 1
-  assert text.count("</script>") == 1
+  assert text.count("</script>") == 3
+  assert len(json_blocks(text)) == 2
 
 
 def test_hostile_question_id_cannot_break_section_anchors_or_chips(
@@ -2850,7 +2898,7 @@ def test_hostile_question_id_cannot_break_section_anchors_or_chips(
     if attrs.get("class") == "chip":
       assert set(attrs) == {"class", "href"}
   for attrs in page.tags("details"):
-    assert set(attrs) <= {"class", "id", "open"}
+    assert set(attrs) <= {"class", "id", "open", "data-doc"}
 
 
 # ---- byte-identical output
@@ -2980,10 +3028,6 @@ def test_a_surrogate_in_the_question_sections_also_gives_record_error(
     write_report(record, tmp_path / "x" / "report.html")
 
 
-@pytest.mark.xfail(
-  strict=True,
-  reason="write_text truncates the file before the encoding fails: a good report is lost",
-)
 def test_a_failed_encoding_leaves_the_previous_report_intact(
   record: RunRecord, tmp_path: Path
 ) -> None:
@@ -2993,3 +3037,630 @@ def test_a_failed_encoding_leaves_the_previous_report_intact(
   with pytest.raises(RecordError):
     write_report(record, target)
   assert target.read_text(encoding="utf-8") == "previous good report"
+
+
+# ------------------------------------------------------------------ explorer data, links, raw documents
+
+
+def usage_of(item: Any) -> dict[str, set[str]]:
+  """The five chunk-id sets of a question, worked out from the record on its own.
+
+  This repeats the definitions of the task (and of the document map) without
+  calling ``chunk_usage``, so a mistake in that function cannot hide itself.
+  """
+  found: dict[str, set[str]] = {
+    key: set() for key in ("retrieved", "added", "context", "cited", "dropped")
+  }
+  if item["retrieval"]:
+    for chunk in item["retrieval"]["chunks"]:
+      found["retrieved"].add(chunk["chunk_id"])
+  contexts = []
+  if item["enrich"]:
+    contexts = [one["after"] for one in item["enrich"]["steps"]]
+    final = item["enrich"]["context"]
+    if final:
+      contexts.append(final)
+      found["dropped"].update(final["dropped_chunk_ids"])
+      for piece in final["pieces"]:
+        for ref in piece["chunks"]:
+          found["context"].add(ref["chunk_id"])
+  for context in contexts:
+    for piece in context["pieces"]:
+      for ref in piece["chunks"]:
+        if ref["origin"]:
+          found["added"].add(ref["chunk_id"])
+  result = item["generation"]["result"] if item["generation"] else None
+  if result:
+    found["dropped"].update(result.get("dropped_chunk_ids") or [])
+    for cite in result.get("citations") or []:
+      found["cited"].update(cite["chunk_ids"])
+  return found
+
+
+def question_ids(rec: RunRecord) -> list[str]:
+  return [
+    str(item["spec"].get("id") or f"q{number:02d}")
+    for number, item in enumerate(rec["questions"], 1)
+  ]
+
+
+def assert_embedded_data_matches(rec: RunRecord) -> None:
+  blocks = json_blocks(render_run(rec, token_counter=FAKE))
+  assert blocks["hr-points"] == json.loads(json.dumps(rec["points"]))
+  usage = blocks["hr-usage"]
+  assert list(usage) == question_ids(rec)
+  for qid, item in zip(question_ids(rec), rec["questions"], strict=True):
+    assert list(usage[qid]) == ["retrieved", "added", "context", "cited", "dropped"]
+    for key, ids in usage[qid].items():
+      assert ids == sorted(set(ids)), f"{qid}.{key} is not sorted and unique"
+      assert set(ids) == usage_of(item)[key], f"{qid}.{key}"
+
+
+def test_embedded_points_and_usage_equal_the_record_of_the_real_run(
+  real_record: RunRecord,
+) -> None:
+  assert real_record["points"]
+  assert_embedded_data_matches(real_record)
+  # in record order, not sorted by id or by source
+  points = json_blocks(render_run(real_record))["hr-points"]
+  assert [p["id"] for p in points] == [p["id"] for p in real_record["points"]]
+  assert all(set(p) == {"id", "payload", "vector"} for p in points)
+
+
+@pytest.mark.parametrize(
+  "fixture", ["budget_record", "empty_record", "failed_budget_record"]
+)
+def test_embedded_data_equals_the_record_of_the_variant_runs(
+  fixture: str, request: pytest.FixtureRequest
+) -> None:
+  assert_embedded_data_matches(request.getfixturevalue(fixture))
+
+
+def test_budget_run_has_dropped_chunks_in_the_usage(budget_record: RunRecord) -> None:
+  usage = json_blocks(render_run(budget_record))["hr-usage"]
+  assert any(entry["dropped"] for entry in usage.values())
+  assert any(entry["context"] for entry in usage.values())
+
+
+def test_embedded_usage_of_the_hand_built_record_is_exactly_the_five_sets(
+  record: RunRecord,
+) -> None:
+  usage = json_blocks(render_run(map_record(record), token_counter=FAKE))["hr-usage"]
+  first = usage["q01"]
+  assert first == {
+    "retrieved": ["a1", "n0", "z0"],
+    "added": ["a2", "d0"],
+    "context": ["a1"],
+    "cited": ["a1", "z0"],
+    "dropped": ["a2", "z0"],
+  }
+
+
+@pytest.mark.parametrize(
+  "where",
+  ["retrieval", "enrich", "enrich-late", "generation", "generation-early", "judge"],
+)
+def test_embedded_usage_of_a_question_that_died_midway(
+  record: RunRecord, where: str
+) -> None:
+  rec = failed_at(record, where)
+  assert_embedded_data_matches(rec)
+  if where == "retrieval":
+    usage = json_blocks(render_run(rec, token_counter=FAKE))["hr-usage"]["q01"]
+    assert usage == {
+      "retrieved": [],
+      "added": [],
+      "context": [],
+      "cited": [],
+      "dropped": [],
+    }
+
+
+def test_the_data_travels_once_however_many_questions_there_are(
+  record: RunRecord,
+) -> None:
+  one = render_run(with_questions(copy.deepcopy(record), 1), token_counter=FAKE)
+  many = render_run(with_questions(copy.deepcopy(record), 7), token_counter=FAKE)
+  for text in (one, many):
+    assert text.count('id="hr-points"') == 1
+    assert text.count('id="hr-usage"') == 1
+  assert len(json_blocks(many)["hr-usage"]) == 7
+
+  # the points block is the same bytes whatever the number of questions
+  def block(text: str) -> str:
+    return re.search(r'id="hr-points">(.*?)</script>', text, re.S)[0]  # type: ignore[index]
+
+  assert block(one) == block(many)
+  # a point text appears in the page only in the points block and in the cards the
+  # server renders for it (never once per question)
+  needle = record["points"][0]["payload"]["text"]
+  assert needle
+  assert (
+    many.count(json.dumps(needle, ensure_ascii=False)[1:-1])
+    <= one.count(json.dumps(needle, ensure_ascii=False)[1:-1]) * 7
+  )
+
+
+NASTY = (
+  '</script><!-- <script>alert(1)</script> -->    "q" \\ ]]> <\\/script> </SCRIPT >'
+)
+
+
+def test_a_payload_with_a_closing_script_tag_cannot_leave_its_block(
+  record: RunRecord,
+) -> None:
+  point = record["points"][0]
+  point["id"] = NASTY
+  point["payload"] = {
+    "source": NASTY,
+    "text": NASTY,
+    "heading_path": [NASTY, "</script>"],
+    NASTY: NASTY,
+    "chunk_index": 0,
+  }
+  point["vector"] = {"dimension": 1, "norm": 1.0, "head": [0.5]}
+  record["questions"][0]["spec"]["id"] = NASTY
+  record["questions"][0]["generation"]["result"]["citations"] = [  # type: ignore[index]
+    {"number": 1, "chunk_ids": [NASTY]}
+  ]
+  text = render_run(record, token_counter=FAKE)
+  # the page has the three scripts and no stray tag opened by the data
+  assert text.count("</script>") == 3
+  assert text.count("<script") == 3
+  assert len(active_scripts(parse(text))) == 1
+  assert len(parse(text).tags("script")) == 3
+  blocks = json_blocks(text)
+  assert blocks["hr-points"][0] == json.loads(json.dumps(point))
+  assert blocks["hr-points"][0]["payload"]["text"] == NASTY
+  assert next(iter(blocks["hr-usage"])) == NASTY
+  assert blocks["hr-usage"][NASTY]["cited"] == [NASTY]
+  # no "<" survives inside a data block, so nothing in it can be parsed as a tag
+  for body in re.findall(
+    r'<script type="application/json"[^>]*>(.*?)</script>', text, re.S
+  ):
+    assert "<" not in body
+
+
+def test_json_script_writes_every_less_than_sign_as_an_escape() -> None:
+  out = h.json_script("hr-x", {"k": "a<b</script><!--", "<": ["<"]})
+  assert out.startswith('<script type="application/json" id="hr-x">')
+  assert out.endswith("</script>\n")
+  body = out[len('<script type="application/json" id="hr-x">') : -len("</script>\n")]
+  assert "<" not in body
+  assert json.loads(body) == {"k": "a<b</script><!--", "<": ["<"]}
+  # the id is plain text and is escaped
+  assert 'id="a&quot;b&lt;"' in h.json_script('a"b<', None)
+  assert json.loads(re.search(r">(.*)</script>", h.json_script("i", 0))[1]) == 0  # type: ignore[index]
+
+
+def test_json_script_non_serialisable_value_raises() -> None:
+  with pytest.raises(TypeError):
+    h.json_script("x", {"a": object()})
+
+
+def test_embedded_data_is_byte_identical_for_the_same_record(record: RunRecord) -> None:
+  rec = map_record(record)
+  first = render_run(copy.deepcopy(rec), token_counter=FAKE)
+  assert render_run(copy.deepcopy(rec), token_counter=FAKE) == first
+  assert json_blocks(first) == json_blocks(render_run(rec, token_counter=FAKE))
+
+
+# ---- deep links
+
+
+def anchors(fragment: str) -> list[tuple[str, str, str]]:
+  """``(class, unescaped href, inner HTML)`` of every ``<a class= href=>``."""
+  return [
+    (cls, html_lib.unescape(href), inner)
+    for cls, href, inner in re.findall(
+      r'<a class="([^"]*)" href="([^"]*)">(.*?)</a>', fragment, re.S
+    )
+  ]
+
+
+def query_of(href: str) -> dict[str, str]:
+  from urllib.parse import parse_qs
+
+  assert href.startswith("#chunks")
+  _, _, query = href.partition("?")
+  return {k: v[0] for k, v in parse_qs(query, keep_blank_values=True).items()}
+
+
+def test_deep_link_helper_encodes_and_omits_what_is_not_given() -> None:
+  assert h.deep_link() == "#chunks"
+  assert h.deep_link(doc="a.md") == "#chunks?doc=a.md"
+  assert h.deep_link(question="q01", used=True) == "#chunks?q=q01&used=1"
+  assert (
+    h.deep_link(doc="d/é & x.md", question="q 1", chunk="c#1?")
+    == "#chunks?doc=d%2F%C3%A9%20%26%20x.md&q=q%201&chunk=c%231%3F"
+  )
+  # empty or None values are left out, never written as "doc="
+  assert h.deep_link(doc="", question=None, chunk="") == "#chunks"
+
+
+def test_link_helper_escapes_the_href_and_keeps_the_inner_html() -> None:
+  out = h.link('#a"b&c', "<code>x</code>")
+  assert out == '<a class="chunk-link" href="#a&quot;b&amp;c"><code>x</code></a>'
+  assert h.link("#x", "i", 'we"ird').startswith('<a class="we&quot;ird"')
+
+
+def test_map_cells_link_to_their_chunk_in_the_explorer(record: RunRecord) -> None:
+  panel = q01(map_record(record))
+  start = panel.index("Mapa de documentos")
+  card_html = panel[start : panel.index('<div class="card rawdocs"', start)]
+  cells = anchors(card_html)
+  assert cells and all(cls == "cl" for cls, _, _ in cells)
+  # one anchor around every cell, none around a cell that has no point
+  assert len(cells) == len(re.findall(r'<span class="cell[^"]*" title=', card_html))
+  by_chunk = {query_of(href)["chunk"]: (href, inner) for _, href, inner in cells}
+  assert set(by_chunk) == {"z2", "z0", "a3", "a0", "a2", "a1", "a4", "b0", "b1", "d0"}
+  href, inner = by_chunk["a1"]
+  assert query_of(href) == {"doc": "a.md", "q": "q01", "chunk": "a1"}
+  assert re.fullmatch(r'<span class="cell orig[^"]*" title="[^"]*">1</span>', inner)
+  # the anchor is outside the span, so the map still reads as before
+  assert len(doc_map(panel)["a.md"]["cells"]) == 5
+
+
+def test_chunk_labels_in_every_section_link_to_the_explorer(record: RunRecord) -> None:
+  panel = q01(map_record(record))
+  for suffix in ("in", "out"):
+    for _, href, _ in anchors(phase(panel, suffix)):
+      assert query_of(href)["q"] == "q01"
+  # entrada: the three retrieved chunks, labels unchanged
+  entrada = anchors(phase(panel, "in"))
+  assert [(query_of(h_)["chunk"], inner) for _, h_, inner in entrada] == [
+    ("a1", "<code>a.md#1</code>"),
+    ("n0", "<code>n0</code>"),
+    ("z0", "<code>z.md#0</code>"),
+  ]
+  # a chunk that has no source still opens the explorer, without a doc filter
+  assert query_of(entrada[1][1]) == {"q": "q01", "chunk": "n0"}
+  # salida: the citation labels
+  salida = [
+    (query_of(h_)["chunk"], inner) for _, h_, inner in anchors(phase(panel, "out"))
+  ]
+  assert salida == [("a1", "<code>a.md#1</code>"), ("z0", "<code>z.md#0</code>")]
+
+
+def test_step_pills_and_reads_are_links_too(record: RunRecord) -> None:
+  rec = map_record(record)
+  item = rec["questions"][0]
+  item["enrich"]["steps"][0]["reads"] = [  # type: ignore[index]
+    {
+      "ranges": [{"collection_name": "c", "doc_id": "d", "first": 1, "last": 2}],
+      "returned": ["a2", "a1"],
+      "seconds": 0.0,
+    }
+  ]
+  panel = q01(rec)
+  step_id = next(i for i in phase_ids(panel) if i not in {"in", "seed", "out", "llm"})
+  body = phase(panel, step_id)
+  targets = {
+    query_of(href)["chunk"] for cls, href, _ in anchors(body) if "chunk-link" in cls
+  }
+  assert {"a1", "a2"} <= targets
+  pills = [
+    inner for cls, _, inner in anchors(body) if "chunk-link" in cls and "pill" in inner
+  ]
+  assert pills and all(inner.startswith('<span class="pill') for inner in pills)
+
+
+def test_a_chunk_with_no_point_stays_plain_text(record: RunRecord) -> None:
+  rec = map_record(record)
+  rec["questions"][0]["generation"]["result"]["citations"] = [  # type: ignore[index]
+    {"number": 1, "chunk_ids": ["a1", "nobody"]}
+  ]
+  body = phase(q01(rec), "out")
+  assert "<code>nobody</code>" in body
+  assert "chunk=nobody" not in body
+  assert "chunk=a1" in body
+
+
+def test_links_of_the_real_run_point_at_real_points_and_the_right_question(
+  real_record: RunRecord,
+) -> None:
+  text = render_run(real_record)
+  ids = {p["id"]: p["payload"].get("source") for p in real_record["points"]}
+  found = 0
+  for qid in question_ids(real_record):
+    for _, href, _ in anchors(panel_of(text, f"q-{qid}")):
+      if not href.startswith("#chunks") or "chunk=" not in href:
+        continue
+      query = query_of(href)
+      found += 1
+      assert query["q"] == qid
+      assert query["chunk"] in ids
+      assert query.get("doc") == ids[query["chunk"]]
+  assert found > 10
+
+
+def test_point_ids_are_the_retrieval_chunk_ids_in_the_real_run(
+  real_record: RunRecord,
+) -> None:
+  """The deep link uses the point id as the chunk id: this is what makes it valid."""
+  point_ids = {p["id"] for p in real_record["points"]}
+  assert len(point_ids) == len(real_record["points"])
+  touched = set()
+  for item in real_record["questions"]:
+    for ids in usage_of(item).values():
+      touched |= ids
+  assert touched
+  assert touched <= point_ids
+  # and the ids a question retrieved are exactly those the report links to
+  text = render_run(real_record)
+  for qid, item in zip(
+    question_ids(real_record), real_record["questions"], strict=True
+  ):
+    linked = {
+      query_of(h_)["chunk"]
+      for _, h_, _ in anchors(panel_of(text, f"q-{qid}"))
+      if h_.startswith("#chunks") and "chunk=" in h_
+    }
+    assert usage_of(item)["retrieved"] <= linked
+
+
+def test_hostile_source_and_ids_cannot_break_out_of_the_href(record: RunRecord) -> None:
+  points = [pt('c"><img src=x onerror=alert(1)>', HOSTILE, 0, [HOSTILE], HOSTILE)]
+  rec = hand_record(
+    record,
+    points=points,
+    chunks=[rc(points[0]["id"], HOSTILE, 0)],
+    documents=[HOSTILE],
+  )
+  text = q01(rec)
+  page = parse(text)
+  assert page.tags("img") == []
+  hrefs = [a["href"] or "" for a in page.tags("a") if "href" in a]
+  deep = [href for href in hrefs if href.startswith("#chunks") and "chunk=" in href]
+  assert deep
+  for href in deep:
+    assert re.fullmatch(r"#chunks\?[A-Za-z0-9._~%&=-]*", href), href
+    query = query_of(href)
+    assert query["doc"] == HOSTILE
+    assert query["chunk"] == points[0]["id"]
+
+
+# ---- raw documents section
+
+
+def raw_section(panel: str) -> str:
+  start = panel.index('<div class="card rawdocs"')
+  end = panel.find('<details class="phase"', start)
+  return panel[start : end if end != -1 else len(panel)]
+
+
+def raw_docs(panel: str) -> list[str]:
+  return [
+    html_lib.unescape(d)
+    for d in re.findall(r'<details class="rawdoc" data-doc="([^"]*)"', panel)
+  ]
+
+
+def test_every_question_tab_has_one_raw_section_with_its_documents(
+  report: str, real_record: RunRecord
+) -> None:
+  with_docs = 0
+  for qid in question_ids(real_record):
+    panel = panel_of(report, f"q-{qid}")
+    # the same documents as the map, in the same order; none, no section
+    assert raw_docs(panel) == list(doc_map(panel))
+    if not raw_docs(panel):
+      assert "rawdocs" not in panel
+      continue
+    with_docs += 1
+    assert panel.count(f'id="raw-{qid}"') == 1
+    assert f'data-q="{qid}"' in panel
+  assert with_docs >= 2
+
+
+def test_raw_section_lists_the_documents_of_the_map(record: RunRecord) -> None:
+  panel = q01(map_record(record))
+  assert (
+    raw_docs(panel)
+    == list(doc_map(panel))
+    == ["a.md", "b.md", "d.md", "ghost.md", "z.md"]
+  )
+  # a document of the question that the collection does not have is still listed
+  assert "ghost.md" in raw_docs(panel)
+
+
+def test_raw_section_sits_between_the_map_and_the_phases_and_is_collapsed(
+  record: RunRecord,
+) -> None:
+  panel = q01(map_record(record))
+  assert panel.index("Mapa de documentos") < panel.index('id="raw-q01"')
+  assert panel.index('id="raw-q01"') < panel.index('<details class="phase"')
+  section = raw_section(panel)
+  assert "Documentos tocados (crudo)" in section
+  for tag in re.findall(r'<details class="rawdoc"[^>]*>', section):
+    assert "open" not in tag
+  # lazy: the chunks are not in the page once per document, the script draws them
+  assert "chunk-card" not in section
+  assert "texto del chunk" not in section
+  assert section.count('<div class="rawbody"></div>') == 5
+  # the phases are still where they were (the section is not a phase)
+  assert phase_ids(panel)[:2] == ["in", "seed"]
+
+
+def test_raw_section_links_to_the_explorer_filtered_by_the_question(
+  record: RunRecord,
+) -> None:
+  section = raw_section(q01(map_record(record)))
+  links = [a for a in anchors(section) if a[0] == "raw-link"]
+  assert len(links) == 1
+  assert query_of(links[0][1]) == {"q": "q01", "used": "1"}
+
+
+def test_raw_section_and_map_agree_for_each_run_variant(
+  budget_record: RunRecord, empty_record: RunRecord
+) -> None:
+  for rec in (budget_record, empty_record):
+    text = render_run(rec)
+    for qid in question_ids(rec):
+      panel = panel_of(text, f"q-{qid}")
+      if "No hay documentos que mostrar." in panel:
+        continue
+      assert raw_docs(panel) == list(doc_map(panel))
+
+
+def test_no_documents_means_no_raw_section(record: RunRecord) -> None:
+  rec = hand_record(record, points=[], documents=[])
+  panel = q01(rec)
+  assert "No hay documentos que mostrar." in panel
+  assert "rawdocs" not in panel
+  assert 'id="raw-q01"' not in panel
+
+
+def test_raw_section_of_a_question_that_died_in_retrieval(
+  record: RunRecord,
+) -> None:
+  rec = failed_at(record, "retrieval")
+  rec["questions"][0]["spec"]["documents"] = ["x.md"]
+  panel = q01(rec)
+  # the expected document is still listed, and the section still has its link
+  assert raw_docs(panel) == list(doc_map(panel)) == ["x.md"]
+  assert 'id="raw-q01"' in panel
+  rec["questions"][0]["spec"]["documents"] = []
+  assert "rawdocs" not in q01(rec)
+
+
+def test_hostile_document_names_and_question_ids_stay_inside_their_attributes(
+  record: RunRecord,
+) -> None:
+  rec = hand_record(
+    record,
+    points=[pt("p", HOSTILE, 0)],
+    chunks=[rc("p", HOSTILE, 0)],
+    documents=[HOSTILE],
+  )
+  rec["questions"][0]["spec"]["id"] = '"><img src=x onerror=alert(1)>'
+  text = render_run(rec, token_counter=FAKE)
+  page = parse(text)
+  assert page.tags("img") == []
+  details = [a for a in page.tags("details") if "data-doc" in a]
+  assert details[0]["data-doc"] == HOSTILE  # the first question's first document
+  assert set(details[0]) == {"class", "data-doc"}
+  holders = [a for a in page.tags("div") if "data-q" in a]
+  assert holders[0]["data-q"] == '"><img src=x onerror=alert(1)>'
+  assert set(holders[0]) == {"class", "id", "data-q"}
+
+
+def test_the_noscript_notices_and_styles_are_present(report: str) -> None:
+  assert (
+    "<noscript><style>.panel { display: block; } nav { display: none; }</style></noscript>"
+    in report
+  )
+  assert report.index("<noscript><style>") < report.index("</head>")
+  assert "Se necesita JavaScript para ver los chunks." in report
+  # without script every panel is shown: the rule has to follow the base stylesheet
+  assert report.index("<style>\n") < report.index("<noscript><style>")
+
+
+# ---- carry-over from 3.3.2 and the atomic write
+
+
+def test_zero_token_counts_next_to_missing_ones(record: RunRecord) -> None:
+  generation = record["questions"][0]["generation"]
+  assert generation
+  generation["llm_calls"] = [llm_call(prompt_tokens=0, completion_tokens=None)]
+  assert "prompt 0 · respuesta —" in phase(q01(record), "llm")
+  generation["llm_calls"] = [llm_call(prompt_tokens=None, completion_tokens=0)]
+  assert "prompt — · respuesta 0" in phase(q01(record), "llm")
+  generation["llm_calls"] = [llm_call(prompt_tokens=12, completion_tokens=7)]
+  assert "prompt 12 · respuesta 7" in phase(q01(record), "llm")
+
+
+def test_map_tooltip_never_prints_none_for_any_odd_payload_value(
+  record: RunRecord,
+) -> None:
+  texts: list[Any] = [None, "", "   ", 0, False, [], {}, [None]]
+  points = [
+    {
+      "id": f"p{n}",
+      "payload": {"source": "a.md", "chunk_index": n, "text": t},
+      "vector": None,
+    }
+    for n, t in enumerate(texts)
+  ]
+  rows = doc_map(q01(hand_record(record, points=points, chunks=[rc("p0", "a.md", 0)])))
+  titles = [c["title"] for c in rows["a.md"]["cells"]]
+  assert len(titles) == len(texts)
+  # None is dropped; a falsy non-None value is data, so showing "False" or "0" is fine
+  assert "None" not in titles[0]
+  assert titles[0] == "#0"
+
+
+def test_write_report_leaves_no_temporary_file_and_a_normal_mode(
+  real_record: RunRecord, tmp_path: Path
+) -> None:
+  import os
+
+  target = tmp_path / "out" / "report.html"
+  write_report(real_record, target)
+  assert [p.name for p in target.parent.iterdir()] == ["report.html"]
+  assert target.read_text(encoding="utf-8") == render_run(real_record)
+  umask = os.umask(0)
+  os.umask(umask)
+  assert target.stat().st_mode & 0o777 == 0o666 & ~umask
+
+
+def test_write_report_twice_gives_the_same_bytes(
+  real_record: RunRecord, tmp_path: Path
+) -> None:
+  first, second = tmp_path / "a.html", tmp_path / "b.html"
+  write_report(real_record, first)
+  write_report(real_record, second)
+  assert first.read_bytes() == second.read_bytes() == render_run(real_record).encode()
+
+
+def test_a_failed_encoding_leaves_no_temporary_file_behind(
+  record: RunRecord, tmp_path: Path
+) -> None:
+  target = tmp_path / "report.html"
+  target.write_text("previous good report", encoding="utf-8")
+  record["description"] = "\ud800"
+  with pytest.raises(RecordError):
+    write_report(record, target)
+  assert [p.name for p in tmp_path.iterdir()] == ["report.html"]
+
+
+def test_a_failed_move_keeps_the_previous_report_and_names_the_file(
+  real_record: RunRecord, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  import os
+
+  target = tmp_path / "report.html"
+  target.write_text("previous good report", encoding="utf-8")
+
+  def broken(*args: Any, **kwargs: Any) -> None:
+    raise PermissionError("denied")
+
+  monkeypatch.setattr(os, "replace", broken)
+  with pytest.raises(RecordError) as caught:
+    write_report(real_record, target)
+  assert str(target) in str(caught.value)
+  assert target.read_text(encoding="utf-8") == "previous good report"
+  assert [p.name for p in tmp_path.iterdir()] == ["report.html"]
+
+
+def test_the_report_is_not_visible_half_written(
+  real_record: RunRecord, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """While the temporary file is being moved, the old report is still whole."""
+  import os
+
+  target = tmp_path / "report.html"
+  target.write_text("previous good report", encoding="utf-8")
+  original = os.replace
+  seen: list[str] = []
+
+  def spy(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+    seen.append(target.read_text(encoding="utf-8"))
+    assert Path(src).read_text(encoding="utf-8") == render_run(real_record)
+    assert Path(src).parent == target.parent  # same folder: the move is atomic
+    original(src, dst, *args, **kwargs)
+
+  monkeypatch.setattr(os, "replace", spy)
+  write_report(real_record, target)
+  assert seen == ["previous good report"]
+  assert target.read_text(encoding="utf-8") == render_run(real_record)

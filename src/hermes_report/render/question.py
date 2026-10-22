@@ -17,9 +17,11 @@ from hermes_report.render.html import (
   answer_html,
   card,
   chip,
+  deep_link,
   esc,
   grid,
   json_block,
+  link,
   seconds,
   section,
   status_pill,
@@ -27,7 +29,7 @@ from hermes_report.render.html import (
   yes_no,
 )
 
-__all__ = ["QuestionContext", "disagree", "question_panel"]
+__all__ = ["QuestionContext", "chunk_usage", "disagree", "question_panel"]
 
 _SNIPPET: Final = 140
 _PREVIEW: Final = 160
@@ -147,6 +149,55 @@ def disagree(item: QuestionRecord) -> bool:
   )
 
 
+def _count_text(count: object) -> str:
+  """A token count as text; a dash only when it is missing, so ``0`` stays ``0``."""
+  return "—" if count is None else esc(count)
+
+
+def chunk_usage(item: QuestionRecord) -> dict[str, list[str]]:
+  """The chunk ids a question touched, by state, each sorted.
+
+  The states are the ones the document map colours:
+
+  - ``retrieved``: the retriever returned the chunk;
+  - ``added``: the enrichment added it, in any step or in the final context;
+  - ``context``: it is in a piece of the final context;
+  - ``cited``: a citation of the answer points to it;
+  - ``dropped``: the budget discarded it (final context or generation result).
+
+  A question without a stage that gives a state has an empty list for it.
+  """
+  retrieval = item["retrieval"]
+  enrich = item["enrich"]
+  final = enrich["context"] if enrich else None
+  generation = item["generation"]
+  result = generation["result"] if generation else None
+  contexts = [step["after"] for step in enrich["steps"]] if enrich else []
+  if final:
+    contexts.append(final)
+  added = {
+    chunk["chunk_id"]
+    for context in contexts
+    for piece in context["pieces"]
+    for chunk in piece["chunks"]
+    if chunk["origin"]
+  }
+  dropped = set(final["dropped_chunk_ids"]) if final else set()
+  cited: set[str] = set()
+  if result:
+    dropped |= set(result.get("dropped_chunk_ids") or ())
+    cited = {cid for cite in result.get("citations") or () for cid in cite["chunk_ids"]}
+  return {
+    "retrieved": sorted({c["chunk_id"] for c in retrieval["chunks"]})
+    if retrieval
+    else [],
+    "added": sorted(added),
+    "context": sorted(set(_chunk_ids(final))) if final else [],
+    "cited": sorted(cited),
+    "dropped": sorted(dropped),
+  }
+
+
 # --- the tab ----------------------------------------------------------------------------
 
 
@@ -208,6 +259,23 @@ class _Panel:
     info = self.infos.get(chunk_id)
     return info.label if info else chunk_id
 
+  def _linked(self, chunk_id: str, inner: str, css: str = "chunk-link") -> str:
+    """``inner`` as a link to the explorer card of ``chunk_id``.
+
+    The point id is the retrieval ``chunk_id`` (ingest-md stores each chunk
+    under it), so the id of the record is the id of the point. A chunk with no
+    point in the record has nothing to show, so ``inner`` is left as it is.
+    """
+    info = self.ctx.infos.get(chunk_id)
+    if info is None:
+      return inner
+    href = deep_link(doc=info.source, question=self.qid, chunk=chunk_id)
+    return link(href, inner, css)
+
+  def _code(self, chunk_id: str, label: str | None = None) -> str:
+    name = self._name(chunk_id) if label is None else label
+    return self._linked(chunk_id, f"<code>{esc(name)}</code>")
+
   def _where(self, chunk_id: str) -> str:
     info = self.infos.get(chunk_id)
     return info.place if info else _NO_PLACE
@@ -247,6 +315,7 @@ class _Panel:
       + _evaluation_card(item)
       + (f'<div class="flow">{flow}</div>' if flow else "")
       + card("Mapa de documentos", self._doc_map())
+      + self._raw_docs()
       + "".join(
         section(block.anchor, block.step, block.title, block.summary, block.body)
         for block in blocks
@@ -285,7 +354,8 @@ class _Panel:
       vector = chunk["vector_score"]
       chunk_rows.append(
         f"<tr><td>{number}</td>"
-        f"<td><code>{esc(_info(chunk['chunk_id'], metadata).label)}</code></td>"
+        f"<td>{self._code(chunk['chunk_id'], _info(chunk['chunk_id'], metadata).label)}"
+        "</td>"
         f"<td>{esc(_place(metadata))}</td><td>{_score(chunk['score'])}</td>"
         + (
           f"<td>{NO_DATA if vector is None else _score(vector)}</td>"
@@ -386,7 +456,8 @@ class _Panel:
       if not chunks:
         parts.append(f"{number}. ?")
         continue
-      text = f"{number}. {esc(self._name(chunks[0]['chunk_id']))}"
+      first = chunks[0]["chunk_id"]
+      text = f"{number}. {self._linked(first, esc(self._name(first)))}"
       if len(chunks) > 1:
         text += f"…{esc(self._name(chunks[-1]['chunk_id']).split('#')[-1])}"
       parts.append(text)
@@ -408,7 +479,7 @@ class _Panel:
           info.index if (info := self.infos.get(cid)) and info.index is not None else 0
         ),
       )
-      got = " ".join(f"<code>{esc(self._name(cid))}</code>" for cid in returned)
+      got = " ".join(self._code(cid) for cid in returned)
       out.append(
         f'<div class="read"><div><span class="k">Pide</span> {ranges}</div>'
         f'<div><span class="k">Recibe</span> {len(returned)} chunk(s): {got}</div>'
@@ -432,10 +503,11 @@ class _Panel:
       else "añadido por " + ", ".join(origin)
     )
     chunk_id = ref["chunk_id"]
-    return (
+    return self._linked(
+      chunk_id,
       f'<span class="{classes}" '
       f'title="{esc(self._where(chunk_id))} · {esc(chunk_id)}">'
-      f"<b>{esc(self._name(chunk_id))}</b><i>{esc(detail)}</i></span>"
+      f"<b>{esc(self._name(chunk_id))}</b><i>{esc(detail)}</i></span>",
     )
 
   def _pieces(
@@ -592,8 +664,8 @@ class _Panel:
     return (
       f'<div class="kv"><span class="k">Modelo</span> {esc(reply.get("model") or "?")}'
       f'<span class="k">Parámetros</span> <code>{esc(params)}</code>'
-      f'<span class="k">Tokens</span> prompt {esc(reply.get("prompt_tokens") or "—")}'
-      f" · respuesta {esc(reply.get('completion_tokens') or '—')}"
+      f'<span class="k">Tokens</span> prompt {_count_text(reply.get("prompt_tokens"))}'
+      f" · respuesta {_count_text(reply.get('completion_tokens'))}"
       f'<span class="k">Tiempo</span> {call["seconds"]:.2f} s</div>'
       f'<h4>Respuesta cruda</h4><pre class="text raw">{esc(reply["text"])}</pre>'
     )
@@ -612,7 +684,7 @@ class _Panel:
     }
     cite_rows = [
       f'<tr><td><span class="cite">{esc(cite["number"])}</span></td><td>'
-      + " ".join(f"<code>{esc(self._name(cid))}</code>" for cid in cite["chunk_ids"])
+      + " ".join(self._code(cid) for cid in cite["chunk_ids"])
       + f"</td><td>{esc(', '.join(names.get(cite['number'], [])))}</td></tr>"
       for cite in result.get("citations") or ()
     ]
@@ -672,35 +744,26 @@ class _Panel:
 
   # -- document map --
 
+  def _sources(self, usage: Mapping[str, Sequence[str]]) -> list[str]:
+    """The documents the question touched: the expected ones and those of any
+    retrieved or added chunk, sorted. The map and the raw view list the same."""
+    sources = {str(name) for name in self.item["spec"].get("documents", ())}
+    for chunk_id in (*usage["retrieved"], *usage["added"]):
+      info = self.infos.get(chunk_id)
+      if info is not None and info.source is not None:
+        sources.add(info.source)
+    return sorted(sources)
+
   def _doc_map(self) -> str:
-    item = self.item
-    retrieval = item["retrieval"]
-    expected = {str(name) for name in item["spec"].get("documents", ())}
-    retrieved: set[str] = set()
-    sources = set(expected)
-    for chunk in retrieval["chunks"] if retrieval else ():
-      retrieved.add(chunk["chunk_id"])
-      info = self.infos.get(chunk["chunk_id"])
-      if info is not None and info.source is not None:
-        sources.add(info.source)
-    added: set[str] = set()
-    added_refs = list(self._added_refs())
-    for ref in added_refs:
-      added.add(ref["chunk_id"])
-      info = self.infos.get(ref["chunk_id"])
-      if info is not None and info.source is not None:
-        sources.add(info.source)
-    dropped = set(self.final["dropped_chunk_ids"]) if self.final else set()
-    cited: set[str] = set()
-    if self.result:
-      dropped |= set(self.result.get("dropped_chunk_ids") or ())
-      cited = {
-        cid for cite in self.result.get("citations") or () for cid in cite["chunk_ids"]
-      }
+    expected = {str(name) for name in self.item["spec"].get("documents", ())}
+    usage = chunk_usage(self.item)
+    retrieved, added = set(usage["retrieved"]), set(usage["added"])
+    dropped, cited = set(usage["dropped"]), set(usage["cited"])
+    sources = self._sources(usage)
     if not sources:
       return '<p class="muted">No hay documentos que mostrar.</p>'
     out = []
-    for source in sorted(sources):
+    for source in sources:
       entries = self.ctx.by_source.get(source, [])
       compact = " sm" if len(entries) > _COMPACT_CELLS else ""
       cells = []
@@ -719,6 +782,7 @@ class _Panel:
         if chunk_id in cited:
           classes += " cited"
         payload = point["payload"]
+        text = payload.get("text")
         tip = " · ".join(
           part
           for part in (
@@ -726,11 +790,17 @@ class _Panel:
             " › ".join(str(h) for h in payload.get("heading_path") or ())
             if isinstance(payload.get("heading_path"), list)
             else "",
-            _preview(payload.get("text", ""), _PREVIEW),
+            _preview("" if text is None else text, _PREVIEW),
           )
           if part
         )
-        cells.append(f'<span class="{classes}" title="{esc(tip)}">{index}</span>')
+        cells.append(
+          self._linked(
+            chunk_id,
+            f'<span class="{classes}" title="{esc(tip)}">{index}</span>',
+            "cl",
+          )
+        )
       is_expected = source in expected
       count = f"{len(entries)} chunks" + (" · esperado" if is_expected else "")
       out.append(
@@ -742,17 +812,39 @@ class _Panel:
       )
     return "".join(out) + _LEGEND
 
-  def _added_refs(self) -> Iterator[Mapping[str, Any]]:
-    """The chunks that enrichment added, in the contexts after each step."""
-    enrich = self.item["enrich"]
-    contexts = [step["after"] for step in enrich["steps"]] if enrich else []
-    if self.final:
-      contexts.append(self.final)
-    for context in contexts:
-      for piece in context["pieces"]:
-        for chunk in piece["chunks"]:
-          if chunk["origin"]:
-            yield chunk
+  # -- raw documents --
+
+  def _raw_docs(self) -> str:
+    """The section of the documents the question touched, as stored in Qdrant.
+
+    Each document is a collapsed ``<details>`` that ``report.js`` fills the first
+    time it opens, from the embedded points and with this question's states.
+    """
+    sources = self._sources(chunk_usage(self.item))
+    if not sources:
+      return ""
+    qid = esc(self.qid)
+    items = "".join(
+      f'<details class="rawdoc" data-doc="{esc(source)}"><summary>'
+      f"<code>{esc(source)}</code> "
+      f'<span class="muted">{len(self.ctx.by_source.get(source, []))} chunks</span>'
+      '</summary><div class="rawbody"></div></details>'
+      for source in sources
+    )
+    explorer = link(
+      deep_link(question=self.qid, used=True),
+      "Abrir en el explorador solo los chunks que usó esta pregunta",
+      "raw-link",
+    )
+    return (
+      f'<div class="card rawdocs" id="raw-{qid}" data-q="{qid}">'
+      "<h3>Documentos tocados (crudo)</h3>"
+      '<p class="muted">Los chunks tal como están en Qdrant, en el orden del '
+      "documento, con el estado que tienen para esta pregunta.</p>"
+      f"<p>{explorer}</p>{items}"
+      '<noscript><p class="muted">Se necesita JavaScript para ver los chunks.</p>'
+      "</noscript></div>"
+    )
 
 
 def _chunk_ids(context: Mapping[str, Any]) -> list[str]:

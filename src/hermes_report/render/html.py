@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from html import escape
 from importlib import resources
 from typing import Any, Final, Literal
+from urllib.parse import quote
 
 __all__ = [
   "GENERATION_LABELS",
@@ -18,10 +19,13 @@ __all__ = [
   "answer_html",
   "card",
   "chip",
+  "deep_link",
   "esc",
   "json_block",
+  "json_script",
   "page",
   "grid",
+  "link",
   "section",
   "seconds",
   "status_pill",
@@ -180,6 +184,46 @@ def json_block(value: Any) -> str:
   return f'<pre class="text json">{esc(text)}</pre>'
 
 
+def json_script(element_id: str, value: Any) -> str:
+  """``value`` as a JSON ``<script>`` block that cannot close itself.
+
+  Every ``<`` of the JSON text is written as ``\\u003c``, so no text of the value
+  (``</script>``, ``<!--``) can end or confuse the block; ``JSON.parse`` reads it back.
+  ``element_id`` is plain text and is escaped.
+  """
+  text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+  safe = text.replace("<", "\\u003c")
+  return f'<script type="application/json" id="{esc(element_id)}">{safe}</script>\n'
+
+
+def deep_link(
+  *,
+  doc: str | None = None,
+  question: str | None = None,
+  chunk: str | None = None,
+  used: bool = False,
+) -> str:
+  """The href ``#chunks?doc=<source>&q=<id>&chunk=<chunk_id>`` of the explorer.
+
+  Only the parts given appear; ``used`` adds ``used=1`` (the explorer then shows
+  only the chunks the question used). Values are percent-encoded; the result is
+  not HTML-escaped, ``link`` does that.
+  """
+  params = [
+    ("doc", doc),
+    ("q", question),
+    ("chunk", chunk),
+    ("used", "1" if used else None),
+  ]
+  query = "&".join(f"{key}={quote(value, safe='')}" for key, value in params if value)
+  return f"#chunks?{query}" if query else "#chunks"
+
+
+def link(href: str, inner: str, css: str = "chunk-link") -> str:
+  """An anchor to ``href`` (plain text, escaped) around ``inner`` (HTML)."""
+  return f'<a class="{esc(css)}" href="{esc(href)}">{inner}</a>'
+
+
 def seconds(value: float) -> str:
   """A duration with one decimal, as ``"4.2 s"``."""
   return f"{value:.1f} s"
@@ -190,6 +234,7 @@ def page(
   meta: str,
   tabs: Sequence[tuple[str, str, str]],
   panels: Sequence[tuple[str, str]],
+  data: str = "",
 ) -> str:
   """Assemble the self-contained document: styles and script inlined.
 
@@ -199,6 +244,10 @@ def page(
     tabs: One ``(key, label, hover text)`` per tab button, in order.
     panels: One ``(key, body HTML)`` per tab, wrapped in a ``panel`` section
       with ``id="tab-<key>"``.
+    data: HTML placed before the script, such as ``json_script`` blocks that
+      the script reads; the caller has already escaped it.
+
+  Without JavaScript every panel is shown one after the other.
   """
   buttons = "".join(
     f'<button class="tab" data-key="{esc(key)}" title="{esc(hover)}">'
@@ -215,8 +264,9 @@ def page(
     '<!doctype html>\n<html lang="es">\n<head>\n<meta charset="utf-8">\n'
     '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
     f"<title>Hermes Report · {esc(title)}</title>\n<style>\n{css}</style>\n"
+    "<noscript><style>.panel { display: block; } nav { display: none; }</style></noscript>\n"
     "</head>\n<body>\n<header>\n"
     f"  <h1>Hermes Report <span>· {esc(title)}</span></h1>\n"
     f'  <div class="meta">{meta}</div>\n  <nav>{buttons}</nav>\n</header>\n'
-    f"<main>{sections}</main>\n<script>\n{script}</script>\n</body>\n</html>\n"
+    f"<main>{sections}</main>\n{data}<script>\n{script}</script>\n</body>\n</html>\n"
   )
