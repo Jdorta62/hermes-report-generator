@@ -10,3 +10,10 @@ rule verdict :: grade from keywords and evidence phrases -> hermes_report.evalua
 judge :: LLM that grades an answer against the expected one -> hermes_report.evaluate.judge
 evidence :: phrases of the corpus that must reach the context for an answer to be reachable -> Question.evidence
 touched document :: document with a chunk retrieved, added or expected for a question -> report
+metric family :: a named group of scores computed together, selected by name -> hermes_report.metrics.Metric
+score :: one number of a metric family for one question, in [0, 1] or a count -> MetricResult.scores
+metric input :: the neutral view of one answered question that metrics read -> hermes_report.metrics.MetricInput
+judge session :: memoised judge operations (claims, verification, relevance) for one question -> hermes_report.metrics.JudgeSession
+claim :: one statement extracted from an answer or the expected answer -> hermes_report.metrics.judge.Claim
+budget loss :: evidence recall after retrieval minus evidence recall in the final context -> evidence_retrieval
+experiment history :: one row per notebook run and collection, in history.csv / history.jsonl -> notebooks/rag_evaluation.ipynb
