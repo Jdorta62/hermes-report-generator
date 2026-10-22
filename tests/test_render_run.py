@@ -3464,6 +3464,31 @@ def test_raw_section_lists_the_documents_of_the_map(record: RunRecord) -> None:
   assert "ghost.md" in raw_docs(panel)
 
 
+def test_raw_document_summary_uses_the_singular_for_one_chunk(
+  record: RunRecord,
+) -> None:
+  panel = q01(map_record(record))
+  summaries = dict(
+    re.findall(
+      r'<details class="rawdoc" data-doc="([^"]*)"><summary>.*?'
+      r'<span class="muted">([^<]*)</span>',
+      panel,
+    )
+  )
+  points: dict[str, int] = {}
+  for point in record["points"]:
+    source = point["payload"].get("source")
+    if source is not None and point["payload"].get("chunk_index") is not None:
+      points[source] = points.get(source, 0) + 1
+  assert set(summaries) == {"a.md", "b.md", "d.md", "ghost.md", "z.md"}
+  assert "1 chunk" in summaries.values()  # the case under test is present
+  assert not any(v.startswith("1 chunks") for v in summaries.values())
+  for source, text in summaries.items():
+    count = points.get(source, 0)
+    assert text == ("1 chunk" if count == 1 else f"{count} chunks"), source
+  assert summaries["ghost.md"] == "0 chunks"
+
+
 def test_raw_section_sits_between_the_map_and_the_phases_and_is_collapsed(
   record: RunRecord,
 ) -> None:

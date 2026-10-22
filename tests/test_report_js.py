@@ -89,9 +89,11 @@ class Node {
     (this.listeners[type] = this.listeners[type] || []).push({ fn, capture: !!capture });
   }
   matches(sel) {
-    const m = /^([a-zA-Z0-9]*)((?:\.[\w-]+|\[[^\]]+\])*)$/.exec(sel);
+    const m = /^([a-zA-Z0-9]*)((?:\.[\w-]+|\[[^\]]+\])*)((?::not\(\.[\w-]+\))*)$/.exec(sel);
     if (!m) throw new Error('selector not supported by the stub: ' + sel);
     if (m[1] && this.tagName !== m[1].toUpperCase()) return false;
+    const negated = (m[3].match(/:not\(\.([\w-]+)\)/g) || []).map((x) => x.slice(6, -1));
+    if (negated.some((c) => this.classList.contains(c))) return false;
     const rest = m[2].match(/\.[\w-]+|\[[^\]]+\]/g) || [];
     return rest.every((part) => {
       if (part[0] === '.') return this.classList.contains(part.slice(1));
@@ -190,6 +192,18 @@ function makeEnv(scenario) {
     });
     (panels['q-' + qid] || main).appendChild(holder);
   });
+  if (scenario.matrix) {
+    // The matrix of compare.html: a hidden label around the checkbox, then the rows.
+    const label = el('label', {}, 'matrix-filter');
+    label.hidden = true;
+    label.appendChild(el('input', { id: 'only-diff', type: 'checkbox' }));
+    main.appendChild(label);
+    const matrix = el('table');
+    scenario.matrix.forEach((row) => {
+      matrix.appendChild(el('tr', { 'data-q': row.q }, row.diff ? 'diff' : ''));
+    });
+    main.appendChild(matrix);
+  }
   if (scenario.pointsText !== null && scenario.pointsText !== undefined) {
     const s = el('script', { type: 'application/json', id: 'hr-points' });
     s.textContent = scenario.pointsText;
@@ -320,6 +334,8 @@ def run_js(stub: Path, script: Path, tmp_path: Path) -> Run:
     storage: dict[str, str] | None = None,
     raw_texts: tuple[str | None, str | None] | None = None,
     explorer: bool = True,
+    matrix: list[dict[str, Any]] | None = None,
+    no_get_element_by_id: bool = False,
   ) -> Any:
     pointsText: str | None
     usageText: str | None
@@ -342,6 +358,8 @@ def run_js(stub: Path, script: Path, tmp_path: Path) -> Run:
       "storage": storage or {},
       "raw": raw or {},
       "explorer": explorer,
+      "matrix": matrix,
+      "noGetElementById": no_get_element_by_id,
     }
     file = tmp_path / "scenario.json"
     file.write_text(json.dumps(scenario), encoding="utf-8")
@@ -1462,11 +1480,6 @@ def test_points_with_duplicate_sources_and_ids_do_not_crash(run_js: Run) -> None
 NAMES = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]
 
 
-@pytest.mark.xfail(
-  strict=True,
-  reason="usageSets/usage are plain objects: `usageSets['constructor']` is Object's "
-  "own function, so setsOf() reads undefined and throws (needs hasOwnProperty or Object.create(null))",
-)
 @pytest.mark.parametrize("name", NAMES)
 def test_a_question_id_named_like_an_object_member_is_an_ordinary_id(
   run_js: Run, name: str
@@ -1487,11 +1500,6 @@ def test_a_question_id_named_like_an_object_member_is_an_ordinary_id(
   assert out == {"q": name, "badges": [["recuperado"], []]}
 
 
-@pytest.mark.xfail(
-  strict=True,
-  reason="bySource is a plain object: a source named like an Object member hits the "
-  "inherited property and `.push` is not a function",
-)
 @pytest.mark.parametrize("name", NAMES)
 def test_a_document_named_like_an_object_member_is_an_ordinary_document(
   run_js: Run, name: str
@@ -1584,3 +1592,178 @@ def test_a_copy_of_the_record_with_no_questions_still_builds_the_explorer(
     hash_="#chunks",
   )
   assert out == {"count": "7 de 7 chunks", "q": ["ninguna"]}
+
+
+# ------------------------------------------------------------------ the raw section's explorer link
+
+
+def test_the_explorer_link_of_the_raw_section_scrolls_to_the_top(run_js: Run) -> None:
+  out = run_js(
+    """
+    const a = new t.Node('a');
+    a.setAttribute('href', '#chunks?q=q01&used=1');
+    t.body.appendChild(a);
+    const ev = t.click(a);
+    const c = t.controls();
+    return { prevented: ev.defaultPrevented, scroll: t.scrollTo, q: c.questionSelect.value,
+      used: c.used.checked,
+      active: t.tabs().filter((b) => b.classList.contains('active')).map((b) => b.dataset.key) };
+    """,
+    points=STATE_POINTS,
+    usage=STATE_USAGE,
+    keys=["resumen", "chunks", "q-q01"],
+  )
+  assert out["prevented"] is True
+  assert out["scroll"] == [[0, 0]]
+  assert out["active"] == ["chunks"]
+  assert out["q"] == "q01"
+  assert out["used"] is True
+
+
+def test_a_bare_explorer_link_also_scrolls_to_the_top(run_js: Run) -> None:
+  out = run_js(
+    """
+    const a = new t.Node('a');
+    a.setAttribute('href', '#chunks');
+    t.body.appendChild(a);
+    t.click(a);
+    return t.scrollTo;
+    """,
+    points=STATE_POINTS,
+    usage=STATE_USAGE,
+    keys=["resumen", "chunks", "q-q01"],
+  )
+  assert out == [[0, 0]]
+
+
+def test_an_explorer_link_with_a_chunk_scrolls_to_its_card_not_to_the_top(
+  run_js: Run,
+) -> None:
+  out = run_js(
+    """
+    const a = new t.Node('a');
+    a.setAttribute('href', '#chunks?doc=a.md&chunk=s2');
+    t.body.appendChild(a);
+    t.click(a);
+    const card = t.cards(t.controls().list).find((x) => x.getAttribute('data-chunk') === 's2');
+    return { scroll: t.scrollTo, scrolled: card.scrolled };
+    """,
+    points=STATE_POINTS,
+    usage=STATE_USAGE,
+    keys=["resumen", "chunks", "q-q01"],
+  )
+  assert out == {"scroll": [], "scrolled": 1}
+
+
+def test_an_explorer_link_whose_chunk_is_empty_still_scrolls_to_the_top(
+  run_js: Run,
+) -> None:
+  out = run_js(
+    """
+    const a = new t.Node('a');
+    a.setAttribute('href', '#chunks?q=q01&chunk=');
+    t.body.appendChild(a);
+    t.click(a);
+    return t.scrollTo;
+    """,
+    points=STATE_POINTS,
+    usage=STATE_USAGE,
+    keys=["resumen", "chunks", "q-q01"],
+  )
+  assert out == [[0, 0]]
+
+
+# ------------------------------------------------------------------ the comparison matrix filter
+
+ROWS = [
+  {"q": "q01", "diff": True},
+  {"q": "q02", "diff": False},
+  {"q": "q11", "diff": True},
+  {"q": "constructor", "diff": False},
+]
+HIDDEN_ROWS = "t.body.all('tr').map((r) => ({ q: r.dataset.q, hidden: !!r.hidden }))"
+
+
+def test_the_filter_checkbox_is_shown_only_by_the_script(run_js: Run) -> None:
+  out = run_js(
+    "const box = t.document.getElementById('only-diff'); return box.parentNode.hidden;",
+    matrix=ROWS,
+    keys=["resumen", "matriz"],
+  )
+  assert out is False  # the stub starts with `hidden = true`
+
+
+def test_the_filter_hides_the_rows_without_differences_and_shows_them_again(
+  run_js: Run,
+) -> None:
+  out = run_js(
+    f"""
+    const box = t.document.getElementById('only-diff');
+    const initial = {HIDDEN_ROWS};
+    t.setChecked(box, true);
+    const filtered = {HIDDEN_ROWS};
+    t.setChecked(box, false);
+    const restored = {HIDDEN_ROWS};
+    t.setChecked(box, true);
+    t.setChecked(box, true);
+    const twice = {HIDDEN_ROWS};
+    return {{ initial, filtered, restored, twice }};
+    """,
+    matrix=ROWS,
+    keys=["resumen", "matriz"],
+  )
+  assert not any(row["hidden"] for row in out["initial"])
+  assert [(r["q"], r["hidden"]) for r in out["filtered"]] == [
+    ("q01", False),
+    ("q02", True),
+    ("q11", False),
+    ("constructor", True),
+  ]
+  assert not any(row["hidden"] for row in out["restored"])
+  assert out["twice"] == out["filtered"]  # idempotent
+
+
+def test_the_filter_does_nothing_when_no_row_differs(run_js: Run) -> None:
+  out = run_js(
+    f"""
+    t.setChecked(t.document.getElementById('only-diff'), true);
+    return {HIDDEN_ROWS};
+    """,
+    matrix=[{"q": "q01", "diff": False}, {"q": "q02", "diff": False}],
+    keys=["resumen", "matriz"],
+  )
+  assert [row["hidden"] for row in out] == [True, True]
+
+
+def test_a_page_without_the_filter_or_with_no_getElementById_still_routes(
+  run_js: Run,
+) -> None:
+  active = (
+    "t.tabs().filter((b) => b.classList.contains('active')).map((b) => b.dataset.key)"
+  )
+  for kwargs in ({}, {"no_get_element_by_id": True}):
+    out = run_js(
+      f"t.click(t.tabs()[2]); return {active};",
+      points=STATE_POINTS,
+      usage=STATE_USAGE,
+      keys=["resumen", "chunks", "q-q01"],
+      explorer=False,
+      **kwargs,
+    )
+    assert out == ["q-q01"]
+
+
+def test_the_filter_does_not_touch_rows_of_other_pages(run_js: Run) -> None:
+  """The selector is scoped to ``tr[data-q]``: raw-section holders keep their state."""
+  out = run_js(
+    """
+    t.setChecked(t.document.getElementById('only-diff'), true);
+    return t.body.all('.rawdocs').map((n) => !!n.hidden);
+    """,
+    matrix=ROWS,
+    usage={"q01": usage_entry(retrieved=["a0"])},
+    points=RAW_POINTS,
+    raw={"q01": ["a.md"]},
+    keys=["resumen", "matriz", "chunks", "q-q01"],
+  )
+  assert out == [False]

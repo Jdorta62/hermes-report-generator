@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 from collections.abc import Sequence
 from html import escape
 from importlib import resources
+from pathlib import Path
 from typing import Any, Final, Literal
 from urllib.parse import quote
+
+from hermes_report.record import RecordError
 
 __all__ = [
   "GENERATION_LABELS",
@@ -30,6 +35,7 @@ __all__ = [
   "seconds",
   "status_pill",
   "table",
+  "write_html",
   "yes_no",
 ]
 
@@ -227,6 +233,35 @@ def link(href: str, inner: str, css: str = "chunk-link") -> str:
 def seconds(value: float) -> str:
   """A duration with one decimal, as ``"4.2 s"``."""
   return f"{value:.1f} s"
+
+
+def write_html(html: str, path: Path) -> None:
+  """Write ``html`` as UTF-8 to ``path``, creating the parent folder.
+
+  The text goes to a temporary file in the same folder and is then moved over
+  ``path``, so a failure keeps the previous file intact.
+
+  Raises:
+    RecordError: if the file cannot be written or the text cannot be encoded
+      as UTF-8 (a lone surrogate); the error names the file.
+
+  Effects: io
+  """
+  temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+  try:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with temporary.open("w", encoding="utf-8") as handle:
+      handle.write(html)
+    os.replace(temporary, path)
+  except UnicodeError as exc:
+    raise RecordError(
+      path, f"el informe contiene texto que no se puede codificar en UTF-8: {exc}"
+    ) from None
+  except OSError as exc:
+    raise RecordError(path, f"no se puede escribir: {exc}") from None
+  finally:
+    with contextlib.suppress(OSError):
+      temporary.unlink(missing_ok=True)
 
 
 def page(

@@ -7,7 +7,7 @@
 # @reexport=public name imported from another module
 # @deps=project modules imported @ext=third-party packages imported
 
-@mod hermes_report.cli :: Command line of the tool: ``hermes-report run`` and ``hermes-report render`` -> hermes_report/cli.api
+@mod hermes_report.cli :: Command line of the tool: ``hermes-report`` ``run``, ``render`` and ``compare`` -> hermes_report/cli.api
 @mod hermes_report.config :: Run file: the TOML description of a run, validated and with defaults applied -> hermes_report/config.api
 @mod hermes_report.corpus :: Markdown corpus: the documents of a folder, hashed and sorted -> hermes_report/corpus.api
 @mod hermes_report.evaluate :: Grading of one answer: the rule verdict and the LLM judge, both over records -> hermes_report/evaluate.api
@@ -17,9 +17,11 @@
 @mod hermes_report.questions :: Questions file: the JSON battery with expected answers and its rule checks -> hermes_report/questions.api
 @mod hermes_report.record :: Run record: the schema of ``run.json``, its converters and its file I/O -> hermes_report/record.api
 @mod hermes_report.render :: Rendering of a run record as the self-contained ``report.html`` -> hermes_report/render/__init__.api
+@mod hermes_report.render.compare :: The ``compare.html`` of several runs: a pure function of their run records -> hermes_report/render/compare.api
 @mod hermes_report.render.html :: HTML helpers shared by every renderer of the report, and the page itself -> hermes_report/render/html.api
 @mod hermes_report.render.question :: One question tab of the report: its evaluation, document map and every phase -> hermes_report/render/question.api
 @mod hermes_report.render.run :: The ``report.html`` of a run: a pure function of the run record -> hermes_report/render/run.api
+@mod hermes_report.render.score :: Question ids and the score tiles that the run report and the comparison share -> hermes_report/render/score.api
 @mod hermes_report.runner :: Run orchestration: corpus to graded questions, written as a run folder -> hermes_report/runner.api
 @mod hermes_report.store :: The Qdrant collection of a run: create or reuse it, and read it back as stored -> hermes_report/store.api
 @mod hermes_report.trace :: Tracing wrappers that record what every phase of the pipeline sees and returns -> hermes_report/trace.api
