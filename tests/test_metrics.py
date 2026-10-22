@@ -50,6 +50,14 @@ from hermes_report.providers import ProviderError
 from hermes_report.questions import Question
 
 COUNTER = CharRatioTokenCounter(4)
+JUDGED_NAMES = (
+  "faithfulness",
+  "answer_relevance",
+  "context_precision",
+  "context_recall",
+  "answer_correctness",
+  "citations",
+)
 SERVICES = MetricServices(judge=None, embedder=None, counter=COUNTER)
 
 
@@ -412,7 +420,18 @@ class TestJudgeSession:
 
 class TestSelection:
   def test_registry_order_and_names(self) -> None:
-    assert list(METRICS) == ["doc_retrieval", "evidence_retrieval", "refusal", "cost"]
+    assert list(METRICS) == [
+      "doc_retrieval",
+      "evidence_retrieval",
+      "refusal",
+      "cost",
+      "faithfulness",
+      "answer_relevance",
+      "context_precision",
+      "context_recall",
+      "answer_correctness",
+      "citations",
+    ]
     for key, metric in METRICS.items():
       assert metric.name == key
 
@@ -435,8 +454,14 @@ class TestSelection:
     assert MetricSelection(enabled=False, include=("cost",)).resolve() == ()
 
   def test_exclude(self) -> None:
-    names = [m.name for m in MetricSelection(exclude=("refusal", "cost")).resolve()]
+    selection = MetricSelection(exclude=("refusal", "cost", *JUDGED_NAMES))
+    names = [m.name for m in selection.resolve()]
     assert names == ["doc_retrieval", "evidence_retrieval"]
+
+  def test_exclude_a_judged_family(self) -> None:
+    names = [m.name for m in MetricSelection(exclude=("citations",)).resolve()]
+    assert "citations" not in names
+    assert names == [n for n in METRICS if n != "citations"]
 
   def test_exclude_everything_is_empty(self) -> None:
     assert MetricSelection(exclude=tuple(METRICS)).resolve() == ()
@@ -454,7 +479,7 @@ class TestSelection:
 
   def test_duplicates_are_harmless(self) -> None:
     selection = MetricSelection(
-      include=("cost", "cost"), exclude=("refusal", "refusal")
+      include=("cost", "cost"), exclude=("refusal", "refusal", *JUDGED_NAMES)
     )
     assert [m.name for m in selection.resolve()] == [
       "doc_retrieval",
@@ -1087,9 +1112,11 @@ class TestEvaluateMetrics:
     )
     results = evaluate_metrics(item, MetricSelection().resolve(), SERVICES)
     assert [r.name for r in results] == list(METRICS)
-    assert all(r.status == "ok" for r in results)
     for result, metric in zip(results, METRICS.values(), strict=True):
-      assert tuple(result.scores) == metric.scores
+      # No judge or embedder in SERVICES: the judged families are skipped.
+      assert result.status == ("skipped" if metric.name in JUDGED_NAMES else "ok")
+      if result.status == "ok":
+        assert tuple(result.scores) == metric.scores
       assert json.loads(json.dumps(result.to_record())) == result.to_record()
 
   def test_real_registry_over_a_bare_item_never_raises(self) -> None:
@@ -1101,6 +1128,12 @@ class TestEvaluateMetrics:
       "evidence_retrieval": "not_applicable",
       "refusal": "not_applicable",
       "cost": "ok",
+      "faithfulness": "not_applicable",
+      "answer_relevance": "not_applicable",
+      "context_precision": "not_applicable",
+      "context_recall": "not_applicable",
+      "answer_correctness": "not_applicable",
+      "citations": "not_applicable",
     }
 
 
@@ -1213,6 +1246,8 @@ class TestPackage:
     for name in (
       "METRICS",
       "Citation",
+      "Claim",
+      "ClaimVerdict",
       "JudgeSession",
       "Metric",
       "MetricInput",

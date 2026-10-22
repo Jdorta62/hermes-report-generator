@@ -14,6 +14,14 @@ from hermes_report.metrics.deterministic import (
   EvidenceRetrieval,
   Refusal,
 )
+from hermes_report.metrics.judged import (
+  AnswerCorrectness,
+  AnswerRelevance,
+  Citations,
+  ContextPrecision,
+  ContextRecall,
+  Faithfulness,
+)
 
 __all__ = ["METRICS", "MetricSelection", "MetricSelectionError"]
 
@@ -23,7 +31,16 @@ def _registry(*metrics: Metric) -> Mapping[str, Metric]:
 
 
 METRICS: Final[Mapping[str, Metric]] = _registry(
-  DocRetrieval(), EvidenceRetrieval(), Refusal(), Cost()
+  DocRetrieval(),
+  EvidenceRetrieval(),
+  Refusal(),
+  Cost(),
+  Faithfulness(),
+  AnswerRelevance(),
+  ContextPrecision(),
+  ContextRecall(),
+  AnswerCorrectness(),
+  Citations(),
 )
 
 
