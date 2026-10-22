@@ -5,7 +5,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments
 
 # Paths checked when lint gets no arguments.
-LINT_PATHS := "src tests .claude/scripts .claude/hooks"
+LINT_PATHS := "src tests examples .claude/scripts .claude/hooks"
 
 default:
   @just --list

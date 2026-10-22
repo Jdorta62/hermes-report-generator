@@ -376,7 +376,7 @@ class _Panel:
       f"<h4>Consultas buscadas</h4>{searched}"
       f"<h4>Salida del retriever (en su orden)</h4>{found}"
     )
-    summary = f"{len(chunks)} chunks"
+    summary = _chunk_count(len(chunks))
     return _Block(self._anchor("in"), "0", "Entrada", "Retrieval", summary, body)
 
   # -- S Semilla --
@@ -417,7 +417,7 @@ class _Panel:
       before_n, after_n = len(step["before"]["pieces"]), len(step["after"]["pieces"])
       changes = []
       if new_ids:
-        changes.append(f"+{len(new_ids)} chunks")
+        changes.append("+" + _chunk_count(len(new_ids)))
       if before_n != after_n:
         changes.append(f"{before_n}→{after_n} piezas")
       if not changes:
@@ -580,9 +580,9 @@ class _Panel:
     n_before, n_after = len(_chunk_ids(before)), len(_chunk_ids(final))
     body = (
       f'<div class="kv"><span class="k">Límite</span> {esc(limit)} tok · '
-      f"{esc(chunks_limit)} chunks"
-      f'<span class="k">Antes</span> {tok_before} tok · {n_before} chunks'
-      f'<span class="k">Después</span> {tok_after} tok · {n_after} chunks</div>'
+      f"{esc(chunks_limit)} {'chunk' if max_chunks == 1 else 'chunks'}"
+      f'<span class="k">Antes</span> {tok_before} tok · {_chunk_count(n_before)}'
+      f'<span class="k">Después</span> {tok_after} tok · {_chunk_count(n_after)}</div>'
       f'<div class="bar"><div class="bar-before" style="width:{pct_before:.1f}%"></div>'
       f'<div class="bar-after" style="width:{pct_after:.1f}%"></div></div>'
       + (
@@ -596,7 +596,7 @@ class _Panel:
       + self._pieces(final["pieces"], open_text=len(final["pieces"]) <= 4)
     )
     summary = (f"{tok_after}/{cap} tok" if cap else f"{tok_after} tok") + (
-      f" · −{len(dropped)} chunks" if dropped else ""
+      f" · −{_chunk_count(len(dropped))}" if dropped else ""
     )
     return _Block(
       self._anchor("budget"),
@@ -802,7 +802,7 @@ class _Panel:
           )
         )
       is_expected = source in expected
-      count = f"{len(entries)} chunks" + (" · esperado" if is_expected else "")
+      count = _chunk_count(len(entries)) + (" · esperado" if is_expected else "")
       out.append(
         f'<div class="maprow{" expected" if is_expected else ""}">'
         f'<div class="mapdoc"><b>{esc(source)}</b><span>{esc(count)}</span></div>'
@@ -925,7 +925,7 @@ def _evaluation_card(item: QuestionRecord) -> str:
     items.append(
       (
         "Recuperación",
-        f"{len(retrieval['chunks'])} chunks · {esc(seconds(retrieval['seconds']))}",
+        f"{_chunk_count(len(retrieval['chunks']))} · {esc(seconds(retrieval['seconds']))}",
       )
     )
   items.append(

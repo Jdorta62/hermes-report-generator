@@ -14,6 +14,12 @@ dist/
 .coverage.*
 htmlcov/
 
+# Runs, ingestion cache and the downloaded Quijote (never committed)
+out/
+.hermes-report-cache/
+examples/*/data/
+examples/quijote/corpus/
+
 # Secrets
 .env
 .env.*

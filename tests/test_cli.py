@@ -424,13 +424,73 @@ def test_empty_out_is_rejected_before_running(
   assert fake_run.configs == []  # run() was never reached
 
 
-def test_blank_out_is_rejected_too(
-  run_toml: Path, capsys: pytest.CaptureFixture[str], fake_run: Captured
+_BLANK_OUT_ERROR = "argument --out: no puede estar vacío ni ser solo espacios"
+_BLANKS = ["   ", " ", "\t", "\n", " \t\n ", "\u00a0", "\u2003"]
+
+
+@pytest.mark.parametrize("blank", _BLANKS)
+def test_blank_out_is_rejected_by_the_parser(
+  run_toml: Path,
+  capsys: pytest.CaptureFixture[str],
+  fake_run: Captured,
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+  blank: str,
 ) -> None:
-  # Not an empty string, so argparse accepts it; load_config rejects it (exit 2).
-  assert main(["run", str(run_toml), "--out", "   "]) == 2
-  assert fake_run.configs == []
-  assert capsys.readouterr().err.startswith("error: ")
+  cwd = tmp_path / "cwd"
+  cwd.mkdir()
+  monkeypatch.chdir(cwd)
+  assert main(["run", str(run_toml), "--out", blank]) == 2
+  assert fake_run.configs == []  # run() was never reached
+  err = capsys.readouterr().err
+  assert err.startswith("usage: hermes-report run")
+  assert f"hermes-report run: error: {_BLANK_OUT_ERROR}" in err
+  assert list(cwd.iterdir()) == []  # nothing named like the blank was made
+
+
+@pytest.mark.parametrize("blank", _BLANKS)
+def test_render_blank_out_is_rejected_by_the_parser(
+  run_json: Path,
+  capsys: pytest.CaptureFixture[str],
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+  blank: str,
+) -> None:
+  before = sorted(p.name for p in run_json.parent.iterdir())
+  cwd = tmp_path / "cwd"
+  cwd.mkdir()
+  monkeypatch.chdir(cwd)
+  assert main(["render", str(run_json), "--out", blank]) == 2
+  err = capsys.readouterr().err
+  assert f"hermes-report render: error: {_BLANK_OUT_ERROR}" in err
+  assert list(cwd.iterdir()) == []
+  assert sorted(p.name for p in run_json.parent.iterdir()) == before
+
+
+@pytest.mark.parametrize("blank", _BLANKS)
+def test_compare_blank_out_is_rejected_by_the_parser(
+  three_runs: tuple[Path, Path, Path],
+  capsys: pytest.CaptureFixture[str],
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+  blank: str,
+) -> None:
+  cwd = tmp_path / "cwd"
+  cwd.mkdir()
+  monkeypatch.chdir(cwd)
+  assert main(["compare", str(three_runs[0]), str(three_runs[1]), "--out", blank]) == 2
+  err = capsys.readouterr().err
+  assert f"hermes-report compare: error: {_BLANK_OUT_ERROR}" in err
+  assert list(cwd.iterdir()) == []
+
+
+def test_out_with_surrounding_spaces_but_a_name_is_still_accepted(
+  run_toml: Path, fake_run: Captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.chdir(tmp_path)
+  # Only a path with no visible character is refused; " x " is a legal name.
+  assert main(["run", str(run_toml), "--out", " x "]) == 0
+  assert fake_run.configs[0].output.dir.name == " x "
 
 
 def test_no_subcommand_prints_help_and_returns_2(

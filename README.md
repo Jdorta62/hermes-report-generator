@@ -1,0 +1,293 @@
+# hermes-report-generator
+
+Informes de calidad del pipeline Hermes sobre un corpus Markdown.
+
+Dada una carpeta de archivos Markdown y un JSON de preguntas con su respuesta
+esperada, `hermes-report` ejecuta el pipeline completo, evalúa cada respuesta y
+deja dos archivos: `run.json` (todo lo que la ejecución vio y produjo) y
+`report.html` (un informe autocontenido, en español, generado a partir de
+`run.json`). Con `compare` se ponen varias ejecuciones lado a lado.
+
+Es la versión estándar del `playground/` de hermes-generator. El diseño está en
+`.claude/architect/designs/report-generator/design.md`; las referencias
+`§N` de este documento apuntan a sus secciones.
+
+## Qué hace
+
+Una ejecución (`hermes-report run`) recorre estas fases:
+
+1. **Corpus e ingesta**: lista los `.md` del corpus y los trocea con
+   `MarkdownStructuralChunker` (hermes-ingest-md). Los puntos de cada documento
+   se guardan en una caché de disco, así que una segunda ejecución no vuelve a
+   embeber lo que no cambió (§5.1).
+2. **Colección de Qdrant**: carga los puntos en una colección propia
+   (`hermes_report_<título>_<huella>`). Si ya contiene exactamente esos puntos,
+   se reutiliza; si no, se recrea. Solo se tocan colecciones cuyo nombre empieza
+   por `hermes_report_` (§5.2).
+3. **Por cada pregunta**: recuperación (hermes-retrieval), enriquecimiento con la
+   cadena `neighbors`, `merge`, `doc_order` y el ajuste al presupuesto
+   (hermes-enrich), y generación de la respuesta con sus citas
+   (hermes-generator). Cada fase queda registrada (§5.3).
+4. **Evaluación**: reglas (palabras clave y frases de evidencia) y un juez LLM
+   (§5.4).
+5. **Salida**: `run.toml` (el archivo de ejecución ya resuelto), `run.json` y
+   `report.html` en una carpeta nueva.
+
+## Requisitos
+
+- **Python 3.12** y [`uv`](https://docs.astral.sh/uv/).
+- **Ollama** en `http://localhost:11434` (o en `$OLLAMA_HOST`) con los dos
+  modelos por defecto:
+
+  ```bash
+  ollama pull nomic-embed-text   # embeddings
+  ollama pull qwen3:4b           # generación y juez
+  ```
+
+- **Qdrant** en `http://localhost:6333` (o en `$QDRANT_URL`), por ejemplo:
+
+  ```bash
+  docker run -p 6333:6333 qdrant/qdrant
+  ```
+
+Para el modo sin conexión (`run-offline.toml`) no hace falta ninguno de los dos.
+
+## Instalación
+
+```bash
+uv sync
+```
+
+Los cinco módulos de Hermes (`hermes-core`, `hermes-enrich`, `hermes-generator`,
+`hermes-ingest-md` y `hermes-retrieval`) son repositorios privados de GitHub:
+hace falta acceso por ssh (una clave añadida a tu cuenta) y que tu cuenta pueda
+leerlos. `hermes-core` se descarga por https, el resto por ssh.
+
+El proyecto fija `link-mode = "copy"` para `uv` en `pyproject.toml`: con enlaces
+duros (lo normal en `uv`), nltk se niega a leer sus datos y la ingesta falla
+al trocear párrafos largos.
+
+## Inicio rápido: la demo
+
+`examples/demo/` es un corpus pequeño con hechos inventados (Nébula Logística,
+el sistema Faro, el portal Brújula), para que ningún modelo los conozca: lo que
+conteste tiene que salir de las fuentes. Tiene cuatro documentos en dos
+carpetas y siete preguntas: una que se responde con un solo chunk, una que
+necesita chunks vecinos, una que cruza dos documentos, una que debe rechazarse
+y una sin palabras clave (solo la evalúa el juez).
+
+### Sin conexión
+
+```bash
+uv run hermes-report run examples/demo/run-offline.toml
+```
+
+Usa un embedder `hash`, un LLM `echo` y Qdrant en memoria (`":memory:"`). Sirve
+para ver el informe completo y probar la herramienta sin Ollama ni Qdrant; las
+respuestas no son reales (el LLM eco repite la primera frase de la fuente `[1]`).
+
+### Con Ollama y Qdrant
+
+```bash
+uv run hermes-report run examples/demo/run.toml
+```
+
+Al terminar imprime la carpeta, `run.json` y `report.html`. Ábrelo en un
+navegador.
+
+## El Quijote
+
+`examples/quijote/` ejecuta el mismo pipeline sobre el texto completo de *Don
+Quijote*, un archivo por capítulo. El texto no está en el repositorio: se
+descarga una vez de Project Gutenberg (ebook 2000, unos 2 MB) con un script que
+solo usa la biblioteca estándar.
+
+```bash
+uv run python examples/quijote/prepare.py
+uv run hermes-report run examples/quijote/run.toml
+```
+
+`prepare.py` guarda el texto en `examples/quijote/data/` y escribe
+`examples/quijote/corpus/parte-1/capitulo-01.md` … `parte-2/capitulo-74.md`
+(ambas carpetas están en `.gitignore`). Cada archivo empieza con `# <libro>` y
+`## <capítulo>`, de modo que el `heading_path` de sus chunks es
+`[libro, capítulo]`. Comprueba que hay 52 + 74 capítulos y, si no, termina con
+código 1.
+
+La primera ejecución ingiere unos 1700 chunks con `nomic-embed-text` y responde
+las 11 preguntas con `qwen3:4b` y el juez: cuenta con unos 3 minutos en una GPU
+y bastante más sin ella. Las siguientes reutilizan la caché de ingesta y la
+colección de Qdrant. Con los valores por defecto la recuperación encuentra la
+evidencia en pocas preguntas: el informe lo muestra como fallos de
+recuperación, que es justo lo que sirve para ajustar `top_k`, el presupuesto o
+el chunking y comparar las ejecuciones con `hermes-report compare`.
+
+`preguntas.json` tiene 11 preguntas con la respuesta esperada, palabras clave y
+frases de evidencia; la última (`q11`) es un rechazo. `run.toml` usa
+`top_k = 10` y un presupuesto de 3000 tokens.
+
+## El archivo de ejecución (TOML)
+
+Las rutas relativas se resuelven respecto a la carpeta del archivo. Una clave
+desconocida es un error. Claves principales (todas, con sus valores por
+defecto, en §3.1):
+
+| Sección | Claves | Notas |
+|---|---|---|
+| (raíz) | `title`, `description` | `title` es obligatorio |
+| `[corpus]` | `dir`, `glob` | `dir` obligatorio; `glob` por defecto `**/*.md` |
+| `[questions]` | `file` | obligatorio |
+| `[ingest]` | `max_chunk_size`, `hard_boundary_levels`, `strip_frontmatter` | argumentos del chunker |
+| `[embedding]` | `provider`, `model` | `ollama` (por defecto) o `hash` |
+| `[qdrant]` | `url`, `collection` | `$QDRANT_URL`; `":memory:"` para pruebas; la colección debe empezar por `hermes_report_` |
+| `[retrieval]` | `top_k`, `candidate_factor`, `score_threshold` | |
+| `[enrich]` | `chain`, `max_context_tokens`, `max_chunks` | `0` tokens = sin límite |
+| `[generation]` | `provider`, `model`, `temperature`, `seed`, `response_format`, `insufficient_message` | `ollama` o `echo`; modelo por defecto `$OLLAMA_MODEL` o `qwen3:4b` |
+| `[judge]` | `enabled`, `provider`, `model` | por defecto, el mismo proveedor y modelo que la generación |
+| `[output]` | `dir`, `cache_dir` | `out` y `.hermes-report-cache` |
+
+El diseño describe cada clave en §3.1.
+
+Opciones de la línea de órdenes que sustituyen al archivo (§3.1 y §9):
+
+```
+hermes-report run RUN_TOML [--model M] [--judge-model M] [--no-judge]
+                  [--top-k N] [--budget N] [--out DIR] [--only ID ...] [--reingest]
+```
+
+`--only` se puede repetir y ejecuta solo esas preguntas; `--reingest` ignora la
+caché de ingesta y recarga la colección. El código de salida es 0 si todo fue
+bien, 1 si alguna pregunta falló y 2 si la entrada no es válida o un servicio
+no responde.
+
+## El archivo de preguntas (JSON)
+
+```json
+{
+  "title": "Batería del Quijote",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "¿Cuántos días tardó don Quijote en decidir qué nombre ponerle a su caballo?",
+      "expected": "Cuatro días.",
+      "keywords": ["cuatro"],
+      "evidence": ["cuatro dias se le pasaron"],
+      "documents": ["parte-1/capitulo-01.md"]
+    }
+  ]
+}
+```
+
+| Campo | Obligatorio | Significado |
+|---|---|---|
+| `id` | no | único; por defecto `q01`, `q02`… por posición |
+| `question` | sí | la pregunta |
+| `expected` | sí | la respuesta correcta, para quien lee y para el juez |
+| `keywords` | no | palabras que deben aparecer todas en una respuesta correcta (sin distinguir mayúsculas ni acentos) |
+| `evidence` | no | frases del corpus que deben estar todas en el contexto para que la respuesta sea alcanzable |
+| `documents` | no | archivos del corpus (relativos a `corpus.dir`) que contienen la respuesta; deben existir |
+| `refusal` | no | `true` cuando lo correcto es decir que las fuentes no bastan |
+
+Una pregunta sin `keywords` queda como «sin valorar» para las reglas y solo la
+califica el juez (§3.2).
+
+## Qué sale
+
+Cada ejecución crea su carpeta dentro de `output.dir` (§9):
+
+```
+<output.dir>/<AAAAMMDD-HHMMSS>-<título>/
+├── run.toml      el archivo de ejecución ya resuelto (valores por defecto y opciones aplicados)
+├── run.json      el registro completo de la ejecución
+└── report.html   el informe
+```
+
+### Cómo leer el informe
+
+`report.html` es un solo archivo, con CSS y JS dentro. Tiene estas pestañas (§7):
+
+- **Resumen**: fichas de puntuación (reglas y juez), una fila por pregunta
+  (veredicto, juez, marca de desacuerdo, posición de la primera evidencia,
+  segundos), el archivo de ejecución resuelto y el entorno (versiones, modelos,
+  URL).
+- **Corpus e ingesta**: los documentos (caracteres, chunks, si vinieron de la
+  caché, segundos), los argumentos del chunker, el modelo de embeddings, las
+  estadísticas de tamaño de los chunks y la colección de Qdrant.
+- **Chunks en Qdrant**: el explorador de todos los puntos de la colección tal
+  como están guardados (texto, payload y resumen del vector), con filtros por
+  documento y por texto. El selector «marcar pregunta» colorea cada chunk según
+  su estado para esa pregunta: recuperado, añadido por el enriquecimiento, en
+  el contexto final, citado o descartado.
+- **Una pestaña por pregunta**, con cada fase como sección: la ficha de la
+  pregunta y su evaluación, el mapa de documentos, la recuperación, la semilla,
+  cada paso del enriquecimiento con sus lecturas en Qdrant, el ajuste al
+  presupuesto y el `EnrichedContext`, el prompt, las llamadas al LLM, el
+  `GenerationResult` con sus citas, el juez y los documentos tocados en crudo.
+
+El veredicto de las reglas (§5.4) es uno de estos:
+
+| Veredicto | Cuándo |
+|---|---|
+| `correct` | las palabras clave coinciden y la evidencia está en el contexto (o no se dio evidencia) |
+| `correct_without_evidence` | las palabras clave coinciden, pero la evidencia no estaba en el contexto |
+| `retrieval_failure` | respuesta errónea y la evidencia nunca se recuperó |
+| `budget_failure` | respuesta errónea; la evidencia se recuperó pero el presupuesto la descartó |
+| `generation_refused` | el modelo rechazó responder con la evidencia en el contexto |
+| `generation_wrong` | respuesta errónea con la evidencia en el contexto, o sin evidencia dada |
+| `correct_refusal` / `invented_answer` | pregunta de rechazo: se rechazó / no se rechazó |
+| `unrated` | sin palabras clave: solo la califica el juez |
+| `error` | el pipeline lanzó una excepción |
+
+El juez responde `correct`, `partial` o `incorrect`; el informe marca las
+preguntas en las que reglas y juez no coinciden.
+
+## render y compare
+
+`render` vuelve a generar el HTML a partir de un `run.json`, sin ejecutar nada
+(el resultado es el mismo que el de la ejecución):
+
+```bash
+uv run hermes-report render out/<carpeta>/run.json [--out report.html]
+```
+
+`compare` junta dos o más ejecuciones (otro modelo, otro `top_k`, otro
+presupuesto…) en un informe: las claves del archivo de ejecución que difieren,
+fichas por ejecución y una matriz de preguntas con enlaces al informe de cada
+una (§8):
+
+```bash
+uv run hermes-report compare out/a/run.json out/b/run.json [--out compare.html]
+```
+
+Sin `--out`, escribe `compare.html` en la carpeta actual. `--out` no puede estar
+vacío ni ser solo espacios.
+
+## Actualizar los módulos fijados
+
+Cada módulo de Hermes está fijado a un commit (o etiqueta) en
+`[tool.uv.sources]` de `pyproject.toml`, y todos se actualizan a la vez. Para
+subir uno:
+
+1. Edita el `rev` (o el `tag`) de ese módulo en `pyproject.toml`. Si cambia
+   `hermes-core`, comprueba que los demás módulos usan esa misma versión.
+2. Actualiza el bloqueo y el entorno:
+
+   ```bash
+   uv lock --upgrade-package hermes-enrich   # el módulo que cambias
+   uv sync
+   ```
+
+3. Pasa `uv run just check` y vuelve a ejecutar la demo.
+
+## Desarrollo
+
+```bash
+uv run just check    # lint + pruebas (la misma comprobación que la CI)
+uv run just fmt      # formato y correcciones automáticas
+uv run pytest -m integration   # pruebas con Ollama y Qdrant reales (se saltan si no responden)
+```
+
+`just check` deselecciona las pruebas marcadas `integration`.
+
+La CI (`.github/workflows/ci.yml`) necesita el secreto `HERMES_DEPS_TOKEN`, un
+token que pueda leer los cinco repositorios privados.

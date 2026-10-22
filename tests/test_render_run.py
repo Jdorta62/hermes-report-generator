@@ -1903,7 +1903,7 @@ def test_step_summary_variants(record: RunRecord) -> None:
   sums = dict(
     re.findall(r'id="q-q01-(e\d)" open><summary>.*?ph-sum">(.*?)</span>', panel)
   )
-  assert sums["e1"] == "+1 chunks, 1→2 piezas"
+  assert sums["e1"] == "+1 chunk, 1→2 piezas"
   assert sums["e2"] == "2→1 piezas"
   assert sums["e3"] == "reordena"
   assert sums["e4"] == "sin cambios"
@@ -1983,7 +1983,26 @@ def test_budget_dropped_chunks_keep_the_record_order(record: RunRecord) -> None:
   names = re.findall(r"<li>.*?<b>(.*?)</b>", body, re.S)
   assert names == ["d.md#3", "d.md#1", "d.md#2"]
   assert "Antes</span> 4 tok · 4 chunks" in body
-  assert "Después</span> 1 tok · 1 chunks" in body
+  assert "Después</span> 1 tok · 1 chunk</div>" in body
+
+
+@pytest.mark.parametrize(("max_chunks", "noun"), [(1, "chunk"), (2, "chunks")])
+def test_budget_limit_noun_agrees_with_the_chunk_cap(
+  record: RunRecord, max_chunks: int, noun: str
+) -> None:
+  pieces = [pc(f"w{n}", rf(f"c{n}", 0.5, source="d.md", index=n)) for n in range(2)]
+  record = hand_record(
+    record,
+    points=[pt(f"c{n}", "d.md", n) for n in range(2)],
+    chunks=[rc("c0", "d.md", 0)],
+    steps=[step("n", cx(*pieces), cx(*pieces))],
+    final=cx(*pieces),
+    budget={"max_context_tokens": 10, "max_chunks": max_chunks},
+  )
+  body = phase(q01(record), "budget")
+  assert f"Límite</span> 10 tok · {max_chunks} {noun}" in body
+  assert f"{max_chunks} {noun}<span" in body
+  assert "1 chunks" not in body
 
 
 def test_budget_dropped_id_missing_from_the_last_step_still_listed(

@@ -355,7 +355,7 @@
       }
       state.page = Math.min(Math.max(state.page, 0), pages - 1);
       usedLabel.style.display = state.question ? "" : "none";
-      count.textContent = found.length + " de " + data.entries.length + " chunks";
+      count.textContent = found.length + " de " + data.entries.length + (data.entries.length === 1 ? " chunk" : " chunks");
       list.textContent = "";
       var shown = found.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE);
       var targetCard = null;

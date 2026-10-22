@@ -9,6 +9,7 @@ import dataclasses
 import importlib.metadata
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -133,10 +134,15 @@ def test_progress_has_one_spanish_line_per_document(
   _run(corpus, cache, progress=lines.append)
   assert len(lines) == len(corpus.documents)
   assert lines[0].startswith(f"{corpus.sources[0]}: ")
-  assert all("chunks (ingerido)" in line for line in lines)
+  counts = [re.search(r": (\d+) (chunks?) \(ingerido\)$", line) for line in lines]
+  assert all(counts)
+  # The noun agrees with the number: "1 chunk", never "1 chunks".
+  assert all(
+    m and m.group(2) == ("chunk" if m.group(1) == "1" else "chunks") for m in counts
+  )
   lines.clear()
   _run(corpus, cache, progress=lines.append)
-  assert all("chunks (caché)" in line for line in lines)
+  assert all(re.search(r": \d+ chunks? \(caché\)$", line) for line in lines)
   assert "capitulo-01.md: 2 chunks (caché)" in " ".join(lines).replace("parte-1/", "")
 
 

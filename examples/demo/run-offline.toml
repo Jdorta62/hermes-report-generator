@@ -1,0 +1,29 @@
+# La misma demo sin servicios: embedder hash, LLM eco y Qdrant en memoria.
+# Sirve para ver el informe sin Ollama ni Qdrant; las respuestas no son reales.
+# Uso: uv run hermes-report run examples/demo/run-offline.toml
+title = "Demo de Nébula Logística (sin conexión)"
+description = "Cuatro documentos inventados y siete preguntas, sin Ollama ni Qdrant"
+
+[corpus]
+dir = "corpus"
+
+[questions]
+file = "preguntas.json"
+
+[ingest]
+max_chunk_size = 300
+
+[embedding]
+provider = "hash"
+model = "hash-256"
+
+[qdrant]
+url = ":memory:"
+
+[generation]
+provider = "echo"
+model = "echo"
+insufficient_message = "No encuentro esa información en las fuentes."
+
+[judge]
+provider = "echo"
