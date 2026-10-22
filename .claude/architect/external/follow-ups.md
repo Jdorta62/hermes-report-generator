@@ -9,9 +9,10 @@ Changes outside this repository, found while building it.
   hermes-generator, hermes-retrieval and hermes-ingest-md
   (`hermes-ingestion` organisation) over ssh. The CI job token cannot read
   them.
-- Expected fix: José adds a secret `HERMES_CORE_TOKEN` (a token that can
-  read the five repositories); the workflow rewrites both URL forms to https
-  with that token.
+- Expected fix: José adds one read-only fine-grained token per owner, since
+  such a token belongs to a single owner: `HERMES_CORE_TOKEN` (`Jdorta62`
+  repositories) and `HERMES_INGESTION_TOKEN` (`hermes-ingestion`). The
+  workflow rewrites both URL forms of each owner to https with its token.
 
 ## FU-2 Tags for the pinned modules
 

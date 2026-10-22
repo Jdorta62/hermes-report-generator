@@ -418,10 +418,14 @@ def test_gitignore_keeps_generated_files_out_but_ships_the_examples() -> None:
 def test_ci_reads_the_private_dependencies_before_uv_sync() -> None:
   text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
   assert "persist-credentials: false" in text
-  token = "https://x-access-token:${{ secrets.HERMES_CORE_TOKEN }}@github.com/"
-  for source in ("ssh://git@github.com/", "https://github.com/"):
+  for secret, owner in (
+    ("HERMES_CORE_TOKEN", "Jdorta62"),
+    ("HERMES_INGESTION_TOKEN", "hermes-ingestion"),
+  ):
+    token = f"https://x-access-token:${{{{ secrets.{secret} }}}}@github.com/{owner}/"
     assert f'url."{token}".insteadOf' in text
-    assert f'"{source}"' in text
+    for source in ("ssh://git@github.com/", "https://github.com/"):
+      assert f'"{source}{owner}/"' in text
   assert text.index("insteadOf") < text.index("- run: uv sync")
   assert text.rindex("insteadOf") < text.index("- run: uv sync")
   assert "FU-1" in text
