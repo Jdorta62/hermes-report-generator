@@ -12,10 +12,12 @@
 @mod hermes_report.corpus :: Markdown corpus: the documents of a folder, hashed and sorted -> hermes_report/corpus.api
 @mod hermes_report.evaluate :: Grading of one answer: the rule verdict and the LLM judge, both over records -> hermes_report/evaluate.api
 @mod hermes_report.ingest :: Ingestion of a corpus into Qdrant points, with a per-document cache on disk -> hermes_report/ingest.api
-@mod hermes_report.metrics :: RAG metrics over a neutral input: retrieval, evidence, refusal and cost -> hermes_report/metrics/__init__.api
+@mod hermes_report.metrics :: RAG metrics over a neutral input: retrieval, evidence, refusal, cost and judged -> hermes_report/metrics/__init__.api
 @mod hermes_report.metrics.base :: Metric core: the neutral input, the result, the services and the Metric contract -> hermes_report/metrics/base.api
 @mod hermes_report.metrics.deterministic :: Deterministic metric families: document and evidence retrieval, refusal and cost -> hermes_report/metrics/deterministic.api
 @mod hermes_report.metrics.judge :: Judge operations of one question, memoised, with every call logged -> hermes_report/metrics/judge.api
+@mod hermes_report.metrics.judged :: Judge-based metric families: the RAG triad, answer correctness and citations -> hermes_report/metrics/judged.api
+@mod hermes_report.metrics.prompts :: Judge prompts (in Spanish) and strict validators of the JSON replies -> hermes_report/metrics/prompts.api
 @mod hermes_report.metrics.runner :: Run metric families over one question and aggregate the scores of a run -> hermes_report/metrics/runner.api
 @mod hermes_report.metrics.selection :: Metric registry and the selection of the families that run -> hermes_report/metrics/selection.api
 @mod hermes_report.pipeline :: Pipeline of one question: retrieve, enrich and generate, recording every phase -> hermes_report/pipeline.api

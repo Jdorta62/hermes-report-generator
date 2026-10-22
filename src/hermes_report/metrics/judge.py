@@ -16,7 +16,7 @@ from hermes_report.metrics.base import (
   MetricInput,
   describe,
 )
-from hermes_report.providers import JudgeClient, ProviderError
+from hermes_report.providers import JudgeClient
 from hermes_report.record import message_record
 
 __all__ = ["Claim", "ClaimVerdict", "JudgeSession"]
@@ -79,6 +79,10 @@ class JudgeSession:
     ask with the same key returns the value, or raises the same error,
     without calling the judge again.
 
+    Any failure becomes a ``MetricError``: the client raising, a reply that is
+    not text or not valid JSON, or ``parse`` raising whatever it raises. The
+    call is logged with its raw reply in every case.
+
     Raises:
       MetricError: the judge failed, or its reply is not valid JSON or not
         what ``parse`` expects.
@@ -92,13 +96,16 @@ class JudgeSession:
       value: T = cached
       return value
     start = perf_counter()
-    raw: str | None = None
+    raw: Any = None
     try:
       raw = self._client.complete_json(messages)
+      if not isinstance(raw, str):
+        raise MetricError(f"El juez devolvió {type(raw).__name__}, no texto")
       parsed: T = parse(json.loads(raw))
-    except (ProviderError, ValueError, MetricError) as exc:
+    except Exception as exc:
       error = exc if isinstance(exc, MetricError) else MetricError(describe(exc))
-      self._log(purpose, messages, raw, str(error), start)
+      logged = None if raw is None else (raw if isinstance(raw, str) else repr(raw))
+      self._log(purpose, messages, logged, str(error), start)
       self._memo[memo_key] = error
       if error is exc:
         raise
@@ -106,6 +113,85 @@ class JudgeSession:
     self._log(purpose, messages, raw, None, start)
     self._memo[memo_key] = parsed
     return parsed
+
+  def answer_claims(self) -> tuple[Claim, ...]:
+    """Claims of the answer and the ``[n]`` markers each carried (memoised).
+
+    Raises:
+      MetricError: there is no answer, or the judge failed or replied badly.
+    Effects: net
+    """
+    from hermes_report.metrics.prompts import claims_messages, parse_claims
+
+    if not self._item.answer:
+      raise MetricError("No hay respuesta de la que extraer afirmaciones")
+    return self.ask(
+      "answer_claims",
+      claims_messages(self._item.answer, "answer", self._item.question),
+      parse_claims,
+    )
+
+  def expected_claims(self) -> tuple[Claim, ...]:
+    """Claims of the expected answer (memoised).
+
+    Raises:
+      MetricError: there is no expected answer, or the judge failed or replied badly.
+    Effects: net
+    """
+    from hermes_report.metrics.prompts import claims_messages, parse_claims
+
+    if not self._item.expected.strip():
+      raise MetricError("No hay respuesta esperada de la que extraer afirmaciones")
+    return self.ask(
+      "expected_claims",
+      claims_messages(self._item.expected, "expected", self._item.question),
+      parse_claims,
+    )
+
+  def verify(
+    self, claims: Sequence[Claim], sources: Sequence[str], key: str
+  ) -> tuple[ClaimVerdict, ...]:
+    """Check ``claims`` against numbered ``sources``; memoised by ``key``.
+
+    Without claims there is nothing to ask and the result is empty; without
+    sources every claim is unsupported. Neither case calls the judge.
+
+    Raises:
+      MetricError: the judge failed or replied badly.
+    Effects: net
+    """
+    from hermes_report.metrics.prompts import parse_verdicts, verify_messages
+
+    if not claims:
+      return ()
+    if not sources:
+      return tuple(ClaimVerdict(n, False, ()) for n in range(1, len(claims) + 1))
+    return self.ask(
+      f"verify:{key}",
+      verify_messages(claims, sources),
+      lambda data: parse_verdicts(data, len(claims), len(sources)),
+      key=f"verify:{key}",
+    )
+
+  def chunk_relevance(self) -> tuple[bool, ...]:
+    """Relevance of each retrieved chunk to the question and expected answer.
+
+    One judge call covers every chunk; no chunks means no call.
+
+    Raises:
+      MetricError: the judge failed or replied badly.
+    Effects: net
+    """
+    from hermes_report.metrics.prompts import parse_relevance, relevance_messages
+
+    texts = [chunk.text for chunk in self._item.retrieved]
+    if not texts:
+      return ()
+    return self.ask(
+      "chunk_relevance",
+      relevance_messages(self._item.question, self._item.expected, texts),
+      lambda data: parse_relevance(data, len(texts)),
+    )
 
   def calls_since(self, mark: int) -> tuple[JudgeCall, ...]:
     """The calls logged after position ``mark``."""
