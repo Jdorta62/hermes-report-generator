@@ -289,5 +289,5 @@ uv run pytest -m integration   # pruebas con Ollama y Qdrant reales (se saltan s
 
 `just check` deselecciona las pruebas marcadas `integration`.
 
-La CI (`.github/workflows/ci.yml`) necesita el secreto `HERMES_DEPS_TOKEN`, un
+La CI (`.github/workflows/ci.yml`) necesita el secreto `HERMES_CORE_TOKEN`, un
 token que pueda leer los cinco repositorios privados.

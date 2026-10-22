@@ -9,7 +9,7 @@ Changes outside this repository, found while building it.
   hermes-generator, hermes-retrieval and hermes-ingest-md
   (`hermes-ingestion` organisation) over ssh. The CI job token cannot read
   them.
-- Expected fix: José adds a secret `HERMES_DEPS_TOKEN` (a token that can
+- Expected fix: José adds a secret `HERMES_CORE_TOKEN` (a token that can
   read the five repositories); the workflow rewrites both URL forms to https
   with that token.
 

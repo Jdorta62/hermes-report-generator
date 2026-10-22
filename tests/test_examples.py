@@ -418,7 +418,7 @@ def test_gitignore_keeps_generated_files_out_but_ships_the_examples() -> None:
 def test_ci_reads_the_private_dependencies_before_uv_sync() -> None:
   text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
   assert "persist-credentials: false" in text
-  token = "https://x-access-token:${{ secrets.HERMES_DEPS_TOKEN }}@github.com/"
+  token = "https://x-access-token:${{ secrets.HERMES_CORE_TOKEN }}@github.com/"
   for source in ("ssh://git@github.com/", "https://github.com/"):
     assert f'url."{token}".insteadOf' in text
     assert f'"{source}"' in text

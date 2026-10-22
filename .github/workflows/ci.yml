@@ -19,15 +19,15 @@ jobs:
       # https, the others over ssh) and the job token cannot read them. Both
       # URL forms are rewritten to https with a read-only token.
       # Pending (FU-1): José must create the repository secret
-      # HERMES_DEPS_TOKEN, a token that can read all five repositories. Until
+      # HERMES_CORE_TOKEN, a token that can read all five repositories. Until
       # then this job fails at `uv sync`.
       - run: >-
           git config --global --add
-          url."https://x-access-token:${{ secrets.HERMES_DEPS_TOKEN }}@github.com/".insteadOf
+          url."https://x-access-token:${{ secrets.HERMES_CORE_TOKEN }}@github.com/".insteadOf
           "ssh://git@github.com/"
       - run: >-
           git config --global --add
-          url."https://x-access-token:${{ secrets.HERMES_DEPS_TOKEN }}@github.com/".insteadOf
+          url."https://x-access-token:${{ secrets.HERMES_CORE_TOKEN }}@github.com/".insteadOf
           "https://github.com/"
       - run: uv sync
       - run: uv run just check
