@@ -63,7 +63,13 @@
     var goto = target.closest("a[data-goto]");
     if (goto) { ev.preventDefault(); show(goto.dataset.goto); window.scrollTo(0, 0); return; }
     var deep = target.closest("a[href^='#chunks']");
-    if (deep) { ev.preventDefault(); route(deep.getAttribute("href").slice(1)); }
+    if (deep) {
+      ev.preventDefault();
+      var href = deep.getAttribute("href");
+      route(href.slice(1));
+      // A link to a chunk scrolls to its card; one without a chunk starts at the top.
+      if (!parseHash(href).chunk) { window.scrollTo(0, 0); }
+    }
   });
   window.addEventListener("hashchange", function () { route(location.hash.slice(1)); });
 
@@ -79,7 +85,9 @@
   var points = readJson("hr-points") || [];
   var usage = readJson("hr-usage") || {};
   var questionIds = Object.keys(usage);
-  var usageSets = {};
+  // Maps keyed by ids and sources of the record use no prototype, so a key such as
+  // "constructor" or "__proto__" is an ordinary key.
+  var usageSets = Object.create(null);
   var prepared = null;
 
   function text(value) { return typeof value === "string" ? value : ""; }
@@ -104,7 +112,7 @@
         hay: fold([point.id, text(payload.source), path, text(payload.text)].join("\n"))
       };
     });
-    var bySource = {};
+    var bySource = Object.create(null);
     entries.forEach(function (entry) {
       if (entry.source) { (bySource[entry.source] = bySource[entry.source] || []).push(entry); }
     });
@@ -120,10 +128,11 @@
 
   function setsOf(question) {
     if (!usageSets[question]) {
-      var sets = {};
+      var sets = Object.create(null);
+      var own = Object.prototype.hasOwnProperty.call(usage, question) ? usage[question] : null;
       STATES.forEach(function (state) {
-        var ids = (usage[question] || {})[state[0]] || [];
-        sets[state[0]] = {};
+        var ids = (own && own[state[0]]) || [];
+        sets[state[0]] = Object.create(null);
         ids.forEach(function (id) { sets[state[0]][id] = true; });
       });
       usageSets[question] = sets;
@@ -396,6 +405,19 @@
         render();
       }
     };
+  }
+
+  // ---- comparison matrix (compare.html only) -------------------------------
+
+  var onlyDiff = null;
+  try { onlyDiff = document.getElementById("only-diff"); } catch (e) {}
+  if (onlyDiff) {
+    onlyDiff.parentNode.hidden = false;
+    onlyDiff.addEventListener("change", function () {
+      document.querySelectorAll("tr[data-q]:not(.diff)").forEach(function (row) {
+        row.hidden = onlyDiff.checked;
+      });
+    });
   }
 
   // ---- start --------------------------------------------------------------

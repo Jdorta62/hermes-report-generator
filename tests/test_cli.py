@@ -8,6 +8,9 @@ they do not depend on the pipeline.
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -29,6 +32,7 @@ from hermes_report.ingest import IngestError
 from hermes_report.providers import ProviderError
 from hermes_report.questions import QuestionsError
 from hermes_report.record import RecordError, read_record
+from hermes_report.render import render_compare
 from hermes_report.runner import RunError, RunOutcome
 from hermes_report.store import StoreError
 
@@ -890,3 +894,491 @@ def test_render_through_python_dash_m(run_json: Path) -> None:
   )
   assert result.returncode == 0, result.stderr
   assert result.stdout == f"Informe: {run_json.parent / 'report.html'}\n"
+
+
+# ------------------------------------------------------------ compare
+
+
+@pytest.fixture
+def three_runs(
+  run_toml: Path, tmp_path: Path, forbid_ollama: None
+) -> tuple[Path, Path, Path]:
+  """Three real offline runs (default, ``--top-k 1``, ``--budget 30``) -> run.json."""
+  paths = []
+  for name, flags in (("a", []), ("b", ["--top-k", "1"]), ("c", ["--budget", "30"])):
+    out_dir = tmp_path / "runs" / name
+    assert main(["run", str(run_toml), "--out", str(out_dir), *flags]) in (0, 1)
+    [folder] = list(out_dir.iterdir())
+    paths.append(folder / "run.json")
+  return paths[0], paths[1], paths[2]
+
+
+def errors_of(stderr: str) -> list[str]:
+  """The ``error:`` lines of stderr (warnings about missing reports are ignored)."""
+  return [line for line in stderr.splitlines() if line.startswith("error: ")]
+
+
+def hrefs_of(text: str) -> list[str]:
+  return re.findall(r'<a class="raw-link" href="([^"]*)"', text)
+
+
+def test_compare_writes_compare_html_in_the_current_directory(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  monkeypatch: pytest.MonkeyPatch,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  cwd = tmp_path / "work"
+  cwd.mkdir()
+  monkeypatch.chdir(cwd)
+  a, b, _ = three_runs
+  assert main(["compare", str(a), str(b)]) == 0
+  captured = capsys.readouterr()
+  assert captured.out == f"Comparación: {Path('compare.html')}\n"
+  assert captured.err == ""
+  text = (cwd / "compare.html").read_text(encoding="utf-8")
+  assert text.startswith("<!doctype html>")
+  assert "Comparación de 2 ejecuciones" in text
+  assert [p.name for p in cwd.iterdir()] == ["compare.html"]
+
+
+def test_compare_page_equals_render_compare_of_the_records_with_relative_links(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  target = tmp_path / "cmp" / "compare.html"
+  a, b, c = three_runs
+  assert main(["compare", str(a), str(b), str(c), "--out", str(target)]) == 0
+  expected = render_compare(
+    [
+      (
+        os.path.relpath(p.parent / "report.html", target.parent).replace(os.sep, "/"),
+        read_record(p),
+      )
+      for p in (a, b, c)
+    ]
+  )
+  assert target.read_text(encoding="utf-8") == expected
+
+
+def test_compare_links_are_relative_to_the_output_folder_with_slashes(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  a, b, _ = three_runs
+  for out_dir in (
+    tmp_path / "runs",
+    tmp_path / "runs" / "a",
+    tmp_path / "x" / "y" / "z",
+  ):
+    target = out_dir / "compare.html"
+    assert main(["compare", str(a), str(b), "--out", str(target)]) == 0
+    links = hrefs_of(target.read_text(encoding="utf-8"))
+    assert links == [
+      Path(os.path.relpath(p.parent / "report.html", out_dir)).as_posix()
+      for p in (a, b)
+    ]
+    assert not any("\\" in link or link.startswith("/") for link in links)
+    # following the link from the comparison lands on the report of that run
+    for link, run in zip(links, (a, b), strict=True):
+      assert (out_dir / link).resolve() == (run.parent / "report.html").resolve()
+
+
+def test_compare_links_with_up_levels_when_the_output_is_deeper(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  a, b, _ = three_runs
+  target = tmp_path / "runs" / "a" / "deeper" / "compare.html"
+  assert main(["compare", str(a), str(b), "--out", str(target)]) == 0
+  links = hrefs_of(target.read_text(encoding="utf-8"))
+  assert links[0].startswith("../") and links[1].startswith("../../b/")
+
+
+def test_compare_with_relative_paths_and_the_default_output(
+  three_runs: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  a, b, _ = three_runs
+  monkeypatch.chdir(tmp_path)
+  rel_a, rel_b = a.relative_to(tmp_path), b.relative_to(tmp_path)
+  assert main(["compare", str(rel_a), str(rel_b)]) == 0
+  links = hrefs_of((tmp_path / "compare.html").read_text(encoding="utf-8"))
+  assert links == [
+    (rel_a.parent / "report.html").as_posix(),
+    (rel_b.parent / "report.html").as_posix(),
+  ]
+  for link in links:
+    assert (tmp_path / link).is_file()
+
+
+def test_compare_run_json_in_the_current_directory(
+  three_runs: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+  a, b, _ = three_runs
+  monkeypatch.chdir(a.parent)
+  assert main(["compare", "run.json", str(b), "--out", "cmp.html"]) == 0
+  links = hrefs_of(Path("cmp.html").read_text(encoding="utf-8"))
+  assert links[0] == "report.html"
+
+
+def test_compare_shows_the_differences_of_the_flags_end_to_end(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  target = tmp_path / "compare.html"
+  a, b, c = three_runs
+  assert main(["compare", str(a), str(b), str(c), "--out", str(target)]) == 0
+  text = target.read_text(encoding="utf-8")
+  assert "<code>retrieval.top_k</code>" in text
+  assert "<code>enrich.max_context_tokens</code>" in text
+  assert '<tr class="diff" data-q="q01">' in text  # the 30-token budget fails q01
+
+
+def test_compare_does_not_touch_the_run_folders(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  a, b, _ = three_runs
+  before = {p: p.read_bytes() for r in (a, b) for p in r.parent.iterdir()}
+  assert main(["compare", str(a), str(b), "--out", str(tmp_path / "c.html")]) == 0
+  after = {p: p.read_bytes() for r in (a, b) for p in r.parent.iterdir()}
+  assert after == before
+
+
+def test_compare_twice_gives_the_same_bytes_and_overwrites(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  a, b, _ = three_runs
+  target = tmp_path / "compare.html"
+  target.write_text("old", encoding="utf-8")
+  assert main(["compare", str(a), str(b), "--out", str(target)]) == 0
+  first = target.read_bytes()
+  assert first != b"old"
+  assert main(["compare", str(a), str(b), "--out", str(target)]) == 0
+  assert target.read_bytes() == first
+
+
+def test_compare_the_same_run_twice_is_allowed_and_has_no_differences(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  a, _, _ = three_runs
+  target = tmp_path / "compare.html"
+  assert main(["compare", str(a), str(a), "--out", str(target)]) == 0
+  text = target.read_text(encoding="utf-8")
+  assert "no se diferencian" in text
+  assert "Comparación de 2 ejecuciones" in text
+
+
+def test_compare_a_missing_report_html_warns_but_keeps_the_link(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  a, b, _ = three_runs
+  (b.parent / "report.html").unlink()
+  target = tmp_path / "compare.html"
+  assert main(["compare", str(a), str(b), "--out", str(target)]) == 0
+  captured = capsys.readouterr()
+  missing = b.parent / "report.html"
+  assert captured.err == f"aviso: no existe {missing}; el enlace quedará roto\n"
+  assert str(a.parent / "report.html") not in captured.err
+  assert captured.out == f"Comparación: {target}\n"
+  links = hrefs_of(target.read_text(encoding="utf-8"))
+  assert links[1] == Path(os.path.relpath(missing, tmp_path)).as_posix()
+
+
+def test_compare_warns_once_per_missing_report(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  for run in three_runs:
+    (run.parent / "report.html").unlink()
+  assert (
+    main(["compare", *map(str, three_runs), "--out", str(tmp_path / "c.html")]) == 0
+  )
+  assert capsys.readouterr().err.count("aviso:") == 3
+
+
+def test_compare_with_all_reports_present_prints_no_warning(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  assert (
+    main(["compare", *map(str, three_runs), "--out", str(tmp_path / "c.html")]) == 0
+  )
+  assert capsys.readouterr().err == ""
+
+
+def test_compare_run_folder_with_spaces_and_accents(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  a, b, _ = three_runs
+  odd = tmp_path / "mi carpeta ñ" / "ejecución 1"
+  odd.parent.mkdir()
+  shutil.copytree(a.parent, odd)
+  target = tmp_path / "compare.html"
+  assert main(["compare", str(odd / "run.json"), str(b), "--out", str(target)]) == 0
+  links = hrefs_of(target.read_text(encoding="utf-8"))
+  assert links[0] == "mi carpeta ñ/ejecución 1/report.html"
+
+
+def test_compare_with_no_files_is_a_usage_error(
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  assert main(["compare"]) == 2
+  captured = capsys.readouterr()
+  assert "usage:" in captured.err
+  assert captured.out == ""
+
+
+def test_compare_with_one_file_returns_2_and_writes_nothing(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  target = tmp_path / "compare.html"
+  assert main(["compare", str(three_runs[0]), "--out", str(target)]) == 2
+  captured = capsys.readouterr()
+  assert captured.err.startswith("error: ")
+  assert "2" in captured.err
+  assert captured.out == ""
+  assert not target.exists()
+
+
+def test_compare_with_one_file_that_does_not_exist_still_returns_2(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["compare", str(tmp_path / "nope.json")]) == 2
+  assert capsys.readouterr().err.startswith("error: ")
+
+
+def test_compare_missing_file_returns_2_naming_it_and_writes_nothing(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  missing = tmp_path / "nope.json"
+  target = tmp_path / "compare.html"
+  assert main(["compare", str(three_runs[0]), str(missing), "--out", str(target)]) == 2
+  captured = capsys.readouterr()
+  assert f"error: {missing}: el archivo no existe\n" in captured.err
+  assert captured.out == ""
+  assert not target.exists()
+
+
+@pytest.mark.parametrize(
+  ("content", "fragment"),
+  [
+    ("{", "JSON inválido"),
+    ("", "JSON inválido"),
+    ("[1]", "debe ser un objeto"),
+    ("{}", "schema"),
+    ('{"schema": 99}', "no soportada"),
+  ],
+)
+def test_compare_invalid_run_json_returns_2_whichever_position_it_is_in(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+  content: str,
+  fragment: str,
+) -> None:
+  bad = tmp_path / "bad.json"
+  bad.write_text(content, encoding="utf-8")
+  target = tmp_path / "compare.html"
+  good = str(three_runs[0])
+  for order in ([good, str(bad)], [str(bad), good]):
+    assert main(["compare", *order, "--out", str(target)]) == 2
+    [error] = errors_of(capsys.readouterr().err)
+    assert error.startswith(f"error: {bad}: ")
+    assert fragment in error
+    assert not target.exists()
+
+
+def test_compare_non_utf8_run_json_returns_2(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  bad = tmp_path / "bad.json"
+  bad.write_bytes(b'{"schema": 1, "t": "\xff"}')
+  assert (
+    main(["compare", str(three_runs[0]), str(bad), "--out", str(tmp_path / "c.html")])
+    == 2
+  )
+  assert len(errors_of(capsys.readouterr().err)) == 1
+
+
+def test_compare_directory_as_run_json_returns_2(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  assert main(["compare", str(three_runs[0]), str(tmp_path)]) == 2
+  assert len(errors_of(capsys.readouterr().err)) == 1
+
+
+@pytest.mark.parametrize("break_with", [None, "x", 5])
+@pytest.mark.parametrize("key", ["environment", "questions"])
+def test_compare_a_record_with_a_wrongly_shaped_section_returns_2_not_a_traceback(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+  key: str,
+  break_with: Any,
+) -> None:
+  a, b, _ = three_runs
+  data = json.loads(b.read_text(encoding="utf-8"))
+  data[key] = break_with
+  b.write_text(json.dumps(data), encoding="utf-8")
+  target = tmp_path / "compare.html"
+  assert main(["compare", str(a), str(b), "--out", str(target)]) == 2
+  assert len(errors_of(capsys.readouterr().err)) == 1
+  assert not target.exists()
+
+
+def test_compare_schema_valid_but_empty_record_returns_2(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  empty = tmp_path / "run.json"
+  empty.write_text('{"schema": 1}', encoding="utf-8")
+  assert (
+    main(["compare", str(three_runs[0]), str(empty), "--out", str(tmp_path / "c.html")])
+    == 2
+  )
+  [error] = errors_of(capsys.readouterr().err)
+  assert "KeyError" in error
+  assert not (tmp_path / "c.html").exists()
+
+
+def test_compare_lone_surrogate_in_the_record_returns_2_and_keeps_the_old_output(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  a, b, _ = three_runs
+  text = b.read_text(encoding="utf-8")
+  b.write_text(
+    text.replace('"title": "Don Quijote"', '"title": "bad \\ud800"'), encoding="utf-8"
+  )
+  target = tmp_path / "compare.html"
+  target.write_text("old", encoding="utf-8")
+  assert main(["compare", str(a), str(b), "--out", str(target)]) == 2
+  assert capsys.readouterr().err.startswith("error: ")
+  assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_compare_unwritable_out_returns_2(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  assert (
+    main(["compare", str(three_runs[0]), str(three_runs[1]), "--out", str(tmp_path)])
+    == 2
+  )
+  err = capsys.readouterr().err
+  assert err.startswith("error: ")
+  assert "no se puede escribir" in err
+
+
+def test_compare_out_under_a_file_returns_2(
+  three_runs: tuple[Path, Path, Path],
+  tmp_path: Path,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  blocker = tmp_path / "blocker"
+  blocker.write_text("x", encoding="utf-8")
+  code = main(
+    [
+      "compare",
+      str(three_runs[0]),
+      str(three_runs[1]),
+      "--out",
+      str(blocker / "c.html"),
+    ]
+  )
+  assert code == 2
+  assert capsys.readouterr().err.startswith("error: ")
+
+
+def test_compare_empty_out_is_rejected_by_the_parser(
+  three_runs: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["compare", str(three_runs[0]), str(three_runs[1]), "--out", ""]) == 2
+  assert "--out" in capsys.readouterr().err
+
+
+def test_compare_unknown_flag_is_a_usage_error(
+  three_runs: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+  assert main(["compare", str(three_runs[0]), str(three_runs[1]), "--nope"]) == 2
+  assert "usage:" in capsys.readouterr().err
+
+
+def test_compare_help_is_in_spanish_and_top_level_help_lists_it(
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  assert main(["compare", "--help"]) == 0
+  out = capsys.readouterr().out
+  for fragment in ("RUN_JSON", "--out", "compare.html", "run.json"):
+    assert fragment in out
+  assert main(["--help"]) == 0
+  assert "compare" in capsys.readouterr().out
+
+
+def test_unexpected_exceptions_while_comparing_are_not_swallowed(
+  three_runs: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+  def boom(*args: Any, **kwargs: Any) -> None:
+    raise ZeroDivisionError("bug")
+
+  monkeypatch.setattr(cli, "write_compare", boom)
+  with pytest.raises(ZeroDivisionError):
+    main(
+      [
+        "compare",
+        str(three_runs[0]),
+        str(three_runs[1]),
+        "--out",
+        str(tmp_path / "c.html"),
+      ]
+    )
+
+
+def test_compare_through_python_dash_m(
+  three_runs: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+  target = tmp_path / "compare.html"
+  result = subprocess.run(
+    [
+      sys.executable,
+      "-m",
+      "hermes_report",
+      "compare",
+      str(three_runs[0]),
+      str(three_runs[1]),
+      "--out",
+      str(target),
+    ],
+    capture_output=True,
+    text=True,
+    check=False,
+    timeout=120,
+  )
+  assert result.returncode == 0, result.stderr
+  assert result.stdout == f"Comparación: {target}\n"
+  assert target.is_file()
+
+
+def test_compare_one_file_through_python_dash_m_exits_2(
+  three_runs: tuple[Path, Path, Path],
+) -> None:
+  result = subprocess.run(
+    [sys.executable, "-m", "hermes_report", "compare", str(three_runs[0])],
+    capture_output=True,
+    text=True,
+    check=False,
+    timeout=120,
+  )
+  assert result.returncode == 2
+  assert result.stderr.startswith("error: ")

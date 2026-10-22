@@ -827,7 +827,8 @@ class _Panel:
     items = "".join(
       f'<details class="rawdoc" data-doc="{esc(source)}"><summary>'
       f"<code>{esc(source)}</code> "
-      f'<span class="muted">{len(self.ctx.by_source.get(source, []))} chunks</span>'
+      f'<span class="muted">{_chunk_count(len(self.ctx.by_source.get(source, [])))}'
+      "</span>"
       '</summary><div class="rawbody"></div></details>'
       for source in sources
     )
@@ -845,6 +846,10 @@ class _Panel:
       '<noscript><p class="muted">Se necesita JavaScript para ver los chunks.</p>'
       "</noscript></div>"
     )
+
+
+def _chunk_count(count: int) -> str:
+  return "1 chunk" if count == 1 else f"{count} chunks"
 
 
 def _chunk_ids(context: Mapping[str, Any]) -> list[str]:

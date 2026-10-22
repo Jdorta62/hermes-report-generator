@@ -228,3 +228,8 @@ a.cc-link { margin-left: auto; color: var(--orig); font-size: 12px; }
 details.rawdoc { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
   margin-bottom: 8px; }
 details.rawdoc[open] > summary { margin-bottom: 8px; }
+/* comparison matrix */
+tr.diff > td { background: var(--warn-bg); }
+tr[hidden], .matrix-filter[hidden] { display: none; }
+.matrix-filter { display: inline-flex; gap: 6px; align-items: center; font-size: 13px;
+  margin: 0 0 10px; }

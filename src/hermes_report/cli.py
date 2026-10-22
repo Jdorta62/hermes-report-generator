@@ -1,8 +1,9 @@
-"""Command line of the tool: ``hermes-report run`` and ``hermes-report render``."""
+"""Command line of the tool: ``hermes-report`` ``run``, ``render`` and ``compare``."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from hermes_report.ingest import IngestError
 from hermes_report.providers import ProviderError
 from hermes_report.questions import QuestionsError
 from hermes_report.record import RecordError, read_record
-from hermes_report.render import write_report
+from hermes_report.render import write_compare, write_report
 from hermes_report.runner import RunError, run
 from hermes_report.store import StoreError
 
@@ -90,7 +91,49 @@ def _parser() -> argparse.ArgumentParser:
     metavar="PATH",
     help="archivo HTML de salida (por defecto report.html junto al run.json)",
   )
+  compare_parser = commands.add_parser(
+    "compare",
+    help="compara varias ejecuciones en un informe HTML",
+    description="Lee dos o más run.json y escribe compare.html con sus diferencias, "
+    "puntuación y una matriz de preguntas, sin ejecutar nada.",
+  )
+  compare_parser.add_argument("run_jsons", metavar="RUN_JSON", type=Path, nargs="+")
+  compare_parser.add_argument(
+    "--out",
+    type=_non_empty_path,
+    metavar="PATH",
+    help="archivo HTML de salida (por defecto compare.html en la carpeta actual)",
+  )
   return parser
+
+
+def _compare(args: argparse.Namespace) -> int:
+  """The ``compare`` command: write the comparison of several ``run.json``."""
+  paths: list[Path] = args.run_jsons
+  if len(paths) < 2:
+    print("error: compare necesita al menos 2 archivos run.json", file=sys.stderr)
+    return 2
+  out: Path = args.out or Path("compare.html")
+  try:
+    runs = []
+    for current in paths:
+      report = current.parent / "report.html"
+      if not report.is_file():
+        print(f"aviso: no existe {report}; el enlace quedará roto", file=sys.stderr)
+      href = Path(os.path.relpath(report, out.parent)).as_posix()
+      runs.append((href, read_record(current)))
+    write_compare(runs, out)
+  except RecordError as exc:
+    print(f"error: {exc}", file=sys.stderr)
+    return 2
+  except (KeyError, TypeError, AttributeError, IndexError, ValueError) as exc:
+    print(
+      f"error: algún registro no tiene la forma esperada ({type(exc).__name__}: {exc})",
+      file=sys.stderr,
+    )
+    return 2
+  print(f"Comparación: {out}")
+  return 0
 
 
 def _render(args: argparse.Namespace) -> int:
@@ -129,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     return exc.code if isinstance(exc.code, int) else 2
   if args.command == "render":
     return _render(args)
+  if args.command == "compare":
+    return _compare(args)
   if args.command != "run":
     parser.print_help()
     return 2

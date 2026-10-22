@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 import statistics
 from collections.abc import Sequence
 from pathlib import Path
@@ -15,12 +13,10 @@ from hermes_enrich.tokens import TokenCounter, default_token_counter
 from hermes_report.record import (
   PointRecord,
   QuestionRecord,
-  RecordError,
   RunRecord,
 )
 from hermes_report.render.html import (
   NO_DATA,
-  RULE_TONES,
   card,
   esc,
   grid,
@@ -30,6 +26,7 @@ from hermes_report.render.html import (
   seconds,
   status_pill,
   table,
+  write_html,
   yes_no,
 )
 from hermes_report.render.question import (
@@ -38,6 +35,8 @@ from hermes_report.render.question import (
   disagree,
   question_panel,
 )
+from hermes_report.render.score import question_id as id_of_question
+from hermes_report.render.score import score_tiles
 
 __all__ = ["render_run", "write_report"]
 
@@ -45,9 +44,6 @@ __all__ = ["render_run", "write_report"]
 _COMPACT_ABOVE: Final = 6
 _TAB_TEXT: Final = 40
 _MARK: Final = '<span class="status mark" title="reglas y juez discrepan">≠</span>'
-_BUDGET_FAILURES: Final = ("budget_failure",)
-_RETRIEVAL_FAILURES: Final = ("retrieval_failure",)
-_GENERATION_FAILURES: Final = ("generation_refused", "generation_wrong")
 
 
 def render_run(record: RunRecord, *, token_counter: TokenCounter | None = None) -> str:
@@ -69,7 +65,7 @@ def render_run(record: RunRecord, *, token_counter: TokenCounter | None = None) 
   counter = default_token_counter() if token_counter is None else token_counter
   context = QuestionContext(record["points"], counter)
   questions = record["questions"]
-  ids = [_question_id(item, number) for number, item in enumerate(questions, 1)]
+  ids = [id_of_question(item, number) for number, item in enumerate(questions, 1)]
   compact = len(questions) > _COMPACT_ABOVE
   tabs = [
     ("resumen", "Resumen", "Resumen de la ejecución"),
@@ -113,29 +109,10 @@ def write_report(record: RunRecord, path: Path) -> None:
 
   Effects: io, net
   """
-  html = render_run(record)
-  temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-  try:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with temporary.open("w", encoding="utf-8") as handle:
-      handle.write(html)
-    os.replace(temporary, path)
-  except UnicodeError as exc:
-    raise RecordError(
-      path, f"el informe contiene texto que no se puede codificar en UTF-8: {exc}"
-    ) from None
-  except OSError as exc:
-    raise RecordError(path, f"no se puede escribir: {exc}") from None
-  finally:
-    with contextlib.suppress(OSError):
-      temporary.unlink(missing_ok=True)
+  write_html(render_run(record), path)
 
 
 # --- shared bits ---------------------------------------------------------------
-
-
-def _question_id(item: QuestionRecord, number: int) -> str:
-  return str(item["spec"].get("id") or f"q{number:02d}")
 
 
 def _clip(text: str, limit: int) -> str:
@@ -187,23 +164,7 @@ def _chunks_panel() -> str:
 
 def _summary_panel(record: RunRecord, ids: Sequence[str]) -> str:
   questions = record["questions"]
-  codes = [item["rules"]["verdict"] if item["rules"] else None for item in questions]
-  rated = [code for code in codes if code and RULE_TONES.get(code, "info") != "info"]
-  good = sum(1 for code in rated if RULE_TONES.get(code) == "good")
-  judged = [item["judge"] for item in questions if item["judge"] is not None]
-  judge_good = sum(1 for item in judged if item["verdict"] == "correct")
-  mean = (
-    sum(item["seconds"] for item in questions) / len(questions) if questions else 0.0
-  )
-  tiles = (
-    ("Correctas por reglas", f"{good}/{len(rated)}" if rated else "—"),
-    ("Correctas por juez", f"{judge_good}/{len(judged)}" if judged else "—"),
-    ("Fallos de recuperación", _count(codes, _RETRIEVAL_FAILURES)),
-    ("Fallos de presupuesto", _count(codes, _BUDGET_FAILURES)),
-    ("Fallos de generación", _count(codes, _GENERATION_FAILURES)),
-    ("Reglas y juez discrepan", str(sum(1 for item in questions if disagree(item)))),
-    ("Tiempo medio por pregunta", seconds(mean)),
-  )
+  tiles = score_tiles(questions)
   tile_html = "".join(
     f'<div class="tile"><span class="k">{esc(label)}</span>'
     f'<span class="big">{esc(value)}</span></div>'
@@ -241,10 +202,6 @@ def _summary_panel(record: RunRecord, ids: Sequence[str]) -> str:
     + card("Archivo de ejecución resuelto", json_block(record["config"]))
     + card("Entorno", setup)
   )
-
-
-def _count(codes: Sequence[str | None], wanted: Sequence[str]) -> str:
-  return str(sum(1 for code in codes if code in wanted))
 
 
 def _summary_row(item: QuestionRecord, question_id: str) -> str:
