@@ -673,7 +673,8 @@ def test_paging_at_the_boundaries_of_fifty(
     assert page["bprevOff"] is (number == 1)
     assert page["nextOff"] is (number == pages)
     assert page["bnextOff"] is (number == pages)
-    assert page["count"] == f"{total} de {total} chunks"
+    noun = "chunk" if total == 1 else "chunks"
+    assert page["count"] == f"{total} de {total} {noun}"
   if total:
     assert [page["first"] for page in out] == [f"p{50 * i:03d}" for i in range(pages)]
 

@@ -1,0 +1,57 @@
+{
+  "title": "Demo de Nébula Logística",
+  "questions": [
+    {
+      "id": "d01",
+      "question": "¿A qué canal envía Faro las alertas cuando un sensor deja de responder?",
+      "expected": "Al canal #faro-guardia, cuando un sensor pasa más de 5 minutos sin enviar lecturas.",
+      "keywords": ["faro-guardia"],
+      "evidence": ["canal #faro-guardia"],
+      "documents": ["manuales/faro.md"]
+    },
+    {
+      "id": "d02",
+      "question": "¿Cada cuánto hace Faro copias de seguridad y cuánto tiempo se conservan?",
+      "expected": "Una incremental cada 6 horas y una completa cada domingo a las 03:00; las incrementales se conservan 14 días y las completas 90 días.",
+      "keywords": ["6 horas", "14 días", "90 días"],
+      "evidence": ["incremental cada 6 horas", "incrementales se conservan 14 días"],
+      "documents": ["manuales/faro.md"]
+    },
+    {
+      "id": "d03",
+      "question": "¿Cuántos días de vacaciones tengo al año y cuántos días a la semana puedo teletrabajar?",
+      "expected": "23 días laborables de vacaciones al año (2 más con más de cinco años de antigüedad) y hasta 3 días de teletrabajo por semana.",
+      "keywords": ["23 días", "3 días"],
+      "evidence": ["23 días laborables", "máximo de 3 días por semana"],
+      "documents": ["politicas/vacaciones.md", "politicas/teletrabajo.md"]
+    },
+    {
+      "id": "d04",
+      "question": "¿Cuánto abona la empresa al mes por los gastos de conexión del teletrabajo?",
+      "expected": "40 euros al mes, a quien teletrabaje al menos 6 días al mes.",
+      "keywords": ["40 euros"],
+      "evidence": ["abona 40 euros al mes"],
+      "documents": ["politicas/teletrabajo.md"]
+    },
+    {
+      "id": "d05",
+      "question": "¿Cómo pido unas vacaciones y quién las aprueba?",
+      "expected": "Se piden en el portal Brújula con al menos 15 días naturales de antelación (30 si pasan de 10 días laborables seguidos); las aprueba o rechaza el responsable directo en 5 días laborables.",
+      "documents": ["politicas/vacaciones.md", "manuales/brujula.md"]
+    },
+    {
+      "id": "d06",
+      "question": "¿Cuánta memoria necesita el servidor de Faro?",
+      "expected": "Al menos 8 GB de memoria, además de un disco de 200 GB para las lecturas.",
+      "keywords": ["8 GB"],
+      "evidence": ["al menos 8 GB de memoria"],
+      "documents": ["manuales/faro.md"]
+    },
+    {
+      "id": "d07",
+      "question": "¿Quién es el director general de Nébula Logística y desde cuándo?",
+      "expected": "Los documentos no lo dicen: el modelo debería negarse a responder.",
+      "refusal": true
+    }
+  ]
+}

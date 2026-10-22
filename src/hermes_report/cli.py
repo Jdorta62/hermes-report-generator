@@ -32,9 +32,9 @@ _EXPECTED_ERRORS = (
 
 
 def _non_empty_path(text: str) -> Path:
-  """An argparse type: a path that is not an empty string."""
-  if not text:
-    raise argparse.ArgumentTypeError("no puede estar vacío")
+  """An argparse type: a path that is neither empty nor only whitespace."""
+  if not text.strip():
+    raise argparse.ArgumentTypeError("no puede estar vacío ni ser solo espacios")
   return Path(text)
 
 

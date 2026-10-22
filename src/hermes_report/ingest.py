@@ -130,7 +130,8 @@ def ingest_corpus(
     documents.append(IngestedDocument(doc.source, tuple(points), seconds, cached))
     if progress is not None:
       origin = "caché" if cached else "ingerido"
-      progress(f"{doc.source}: {len(points)} chunks ({origin})")
+      noun = "chunk" if len(points) == 1 else "chunks"
+      progress(f"{doc.source}: {len(points)} {noun} ({origin})")
   first = next((p for d in documents for p in d.points), None)
   return Ingestion(
     documents=tuple(documents),

@@ -1,0 +1,91 @@
+{
+  "title": "Batería del Quijote",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "¿Cuántos días tardó don Quijote en decidir qué nombre ponerle a su caballo?",
+      "expected": "Cuatro días («Cuatro días se le pasaron en imaginar qué nombre le pondría»).",
+      "keywords": ["cuatro"],
+      "evidence": ["cuatro dias se le pasaron"],
+      "documents": ["parte-1/capitulo-01.md"]
+    },
+    {
+      "id": "q02",
+      "question": "¿Qué comía don Quijote los sábados?",
+      "expected": "Duelos y quebrantos.",
+      "keywords": ["duelos", "quebrantos"],
+      "evidence": ["duelos y quebrantos"],
+      "documents": ["parte-1/capitulo-01.md"]
+    },
+    {
+      "id": "q03",
+      "question": "¿Cómo se llamaba la labradora a la que don Quijote dio el nombre de Dulcinea del Toboso?",
+      "expected": "Aldonza Lorenzo.",
+      "keywords": ["aldonza"],
+      "evidence": ["aldonza lorenzo"],
+      "documents": ["parte-1/capitulo-01.md", "parte-1/capitulo-25.md"]
+    },
+    {
+      "id": "q04",
+      "question": "¿Cuántos molinos de viento descubrieron don Quijote y Sancho en aquel campo?",
+      "expected": "Treinta o cuarenta.",
+      "keywords": ["treinta", "cuarenta"],
+      "evidence": ["treinta o cuarenta molinos"],
+      "documents": ["parte-1/capitulo-08.md"]
+    },
+    {
+      "id": "q05",
+      "question": "¿Dónde encontró el narrador los cartapacios con la historia escrita por Cide Hamete Benengeli, y cuánto pagó por ellos?",
+      "expected": "En el Alcaná de Toledo, por medio real.",
+      "keywords": ["alcana", "medio real"],
+      "evidence": ["alcana de toledo", "medio real"],
+      "documents": ["parte-1/capitulo-09.md"]
+    },
+    {
+      "id": "q06",
+      "question": "¿Quién empezó a llamar a don Quijote «el Caballero de la Triste Figura»?",
+      "expected": "Sancho Panza, tras la aventura del cuerpo muerto, por la mala figura que tenía su señor a la luz de las hachas.",
+      "keywords": ["sancho"],
+      "evidence": ["la mas mala figura"],
+      "documents": ["parte-1/capitulo-19.md"]
+    },
+    {
+      "id": "q07",
+      "question": "¿Qué era en realidad el yelmo de Mambrino que conquistó don Quijote?",
+      "expected": "Una bacía de barbero.",
+      "keywords": ["bacia"],
+      "evidence": ["bacia de barbero"],
+      "documents": ["parte-1/capitulo-21.md", "parte-1/capitulo-25.md", "parte-1/capitulo-45.md"]
+    },
+    {
+      "id": "q08",
+      "question": "¿Cómo se llamaba la ínsula que gobernó Sancho Panza?",
+      "expected": "La ínsula Barataria.",
+      "keywords": ["barataria"],
+      "evidence": ["barataria"],
+      "documents": ["parte-2/capitulo-45.md"]
+    },
+    {
+      "id": "q09",
+      "question": "¿Quién se escondía tras el Caballero de la Blanca Luna que venció a don Quijote en la playa de Barcelona?",
+      "expected": "El bachiller Sansón Carrasco.",
+      "keywords": ["carrasco"],
+      "evidence": ["me llaman el bachiller sanson carrasco"],
+      "documents": ["parte-2/capitulo-65.md"]
+    },
+    {
+      "id": "q10",
+      "question": "¿A quién deja don Quijote toda su hacienda en su testamento?",
+      "expected": "A su sobrina, Antonia Quijana.",
+      "keywords": ["antonia"],
+      "evidence": ["antonia quijana"],
+      "documents": ["parte-2/capitulo-74.md"]
+    },
+    {
+      "id": "q11",
+      "question": "¿En qué año murió Sancho Panza?",
+      "expected": "El libro no lo dice: el modelo debería negarse a responder.",
+      "refusal": true
+    }
+  ]
+}

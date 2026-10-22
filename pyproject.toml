@@ -45,7 +45,10 @@ python_version = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not integration'"
+markers = [
+  "integration: needs the real Ollama and Qdrant and the prepared Quijote corpus; deselected by default, run with `uv run pytest -m integration`",
+]
 
 [tool.coverage.run]
 branch = true
@@ -53,6 +56,11 @@ branch = true
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
+
+# nltk (used by the chunker through llama-index-core) refuses hardlinked data
+# files, which is what uv installs by default from its cache.
+[tool.uv]
+link-mode = "copy"
 
 # Each module is pinned to a commit of its repository; bump them together.
 [tool.uv.sources]

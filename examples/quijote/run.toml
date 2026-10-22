@@ -1,0 +1,26 @@
+# Don Quijote por capítulos, con los modelos por defecto: Ollama y Qdrant.
+# Antes: uv run python examples/quijote/prepare.py
+# Uso:   uv run hermes-report run examples/quijote/run.toml
+title = "Don Quijote"
+description = "Batería de 11 preguntas sobre el texto completo, un archivo por capítulo"
+
+[corpus]
+dir = "corpus"
+
+[questions]
+file = "preguntas.json"
+
+[embedding]
+provider = "ollama"
+model = "nomic-embed-text"
+
+[retrieval]
+top_k = 10
+
+[enrich]
+max_context_tokens = 3000
+
+[generation]
+provider = "ollama"
+model = "qwen3:4b"
+insufficient_message = "No encuentro esa información en las fuentes."
