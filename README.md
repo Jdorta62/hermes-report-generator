@@ -144,6 +144,7 @@ defecto, en §3.1):
 | `[enrich]` | `chain`, `max_context_tokens`, `max_chunks` | `0` tokens = sin límite |
 | `[generation]` | `provider`, `model`, `temperature`, `seed`, `response_format`, `insufficient_message` | `ollama` o `echo`; modelo por defecto `$OLLAMA_MODEL` o `qwen3:4b` |
 | `[judge]` | `enabled`, `provider`, `model` | por defecto, el mismo proveedor y modelo que la generación |
+| `[metrics]` | `enabled`, `include`, `exclude` | familias de métricas RAG; ver «Métricas» |
 | `[output]` | `dir`, `cache_dir` | `out` y `.hermes-report-cache` |
 
 El diseño describe cada clave en §3.1.
@@ -152,6 +153,7 @@ Opciones de la línea de órdenes que sustituyen al archivo (§3.1 y §9):
 
 ```
 hermes-report run RUN_TOML [--model M] [--judge-model M] [--no-judge]
+                  [--no-metrics] [--metric NOMBRE ...]
                   [--top-k N] [--budget N] [--out DIR] [--only ID ...] [--reingest]
 ```
 
@@ -241,6 +243,47 @@ El veredicto de las reglas (§5.4) es uno de estos:
 El juez responde `correct`, `partial` o `incorrect`; el informe marca las
 preguntas en las que reglas y juez no coinciden.
 
+## Métricas
+
+Además del veredicto de las reglas y del juez, cada pregunta recibe métricas
+RAG. Son señales aparte: nunca cambian el veredicto ni el código de salida.
+Se calculan por **familia** y cada familia emite una o varias puntuaciones; el
+informe muestra la media de cada una y `compare` las pone lado a lado. Una
+familia a la que le faltan datos queda como «no aplicable» (p. ej. sin
+`documents` en la pregunta) y una que necesita el juez, sin juez, como
+«omitida»; si una falla, las demás siguen.
+
+Por defecto están activas estas familias:
+
+| Familia | Puntuaciones | Mide |
+|---|---|---|
+| `doc_retrieval` | `doc_hit`, `doc_recall`, `doc_mrr` | si lo recuperado viene de los `documents` esperados |
+| `evidence_retrieval` | `evidence_hit`, `evidence_recall`, `evidence_mrr`, `evidence_recall_context`, `budget_loss` | si las frases de `evidence` están en lo recuperado y en el contexto final |
+| `refusal` | `false_refusal`, `invented_answer` | rechazos indebidos y respuestas inventadas |
+| `cost` | `seconds_*`, `context_tokens`, `prompt_tokens`, `reply_tokens` | tiempos por fase y tokens |
+| `faithfulness` | `faithfulness` | parte de la respuesta que el contexto respalda (juez) |
+| `answer_relevance` | `answer_relevance` | cuánto se parece a la pregunta lo que la respuesta contesta (juez y embeddings) |
+| `context_precision` | `context_precision` | si los fragmentos relevantes van antes que los irrelevantes (juez) |
+| `context_recall` | `context_recall` | parte de la respuesta esperada que el contexto cubre (juez) |
+| `answer_correctness` | `correctness_precision`, `correctness_recall`, `correctness_f1` | respuesta frente a la esperada (juez) |
+| `citations` | `citation_precision`, `citation_recall` | si las citas `[n]` apuntan a lo que respalda cada afirmación (juez) |
+
+Seis familias más están apagadas por defecto: `bleu`, `rouge_l`,
+`noise_sensitivity`, `context_entity_recall`, `toxicity` y `bias`. Se
+activan y se desactivan en el archivo de ejecución:
+
+```toml
+[metrics]
+enabled = true                  # false = ninguna métrica
+include = ["bleu", "rouge_l"]   # familias apagadas por defecto que se añaden
+exclude = ["citations"]         # familias que no se calculan
+```
+
+o en la línea de órdenes: `--metric NOMBRE` (se puede repetir) añade una
+familia a `include` y `--no-metrics` apaga todas. Un nombre desconocido es un
+error de configuración. `run.json` pasa a la versión 2 (las de la versión 1
+siguen leyéndose; se muestran sin métricas).
+
 ## render y compare
 
 `render` vuelve a generar el HTML a partir de un `run.json`, sin ejecutar nada
@@ -262,6 +305,52 @@ uv run hermes-report compare out/a/run.json out/b/run.json [--out compare.html]
 Sin `--out`, escribe `compare.html` en la carpeta actual. `--out` no puede estar
 vacío ni ser solo espacios.
 
+## Notebook de experimentos
+
+`notebooks/rag_evaluation.ipynb` sirve para probar configuraciones sobre
+colecciones de Qdrant que ya existen, celda a celda: otro `top_k`, otro
+modelo, filtros por payload, otra selección de métricas. Hace su propia
+recuperación y generación (no pasa por `hermes-report run`) y calcula las
+mismas métricas con `hermes_report.metrics`. Solo lee las colecciones que le
+indicas; la única que escribe es `hermes_report_notebook_demo`, y solo sin
+conexión.
+
+```bash
+uv sync --group notebook    # pandas, jupyterlab, ipykernel y nbclient
+uv run jupyter lab notebooks/rag_evaluation.ipynb
+```
+
+`uv sync` a secas ya incluye el grupo `notebook`; la orden anterior es la
+forma explícita de pedirlo.
+
+Para cambiar el experimento edita solo el diccionario `CONFIG` (sección 2 del
+cuaderno): colecciones, modelos de embeddings, generación y juez, `top_k`,
+`score_threshold`, `filters`, `metrics`, `dataset`, el mensaje de
+información insuficiente y una `note` libre. Después ejecuta de esa celda en
+adelante. Con `judge.provider = None` no hay juez y las familias que lo
+necesitan quedan omitidas.
+
+Sin Ollama ni Qdrant: `HERMES_NOTEBOOK_OFFLINE=1 uv run jupyter lab`. Usa el
+embedder hash, el LLM y el juez de eco, Qdrant en memoria y la colección
+`hermes_report_notebook_demo` construida con `examples/demo/corpus`. Sirve
+para comprobar que funciona, no para medir calidad. Opcionales:
+`HERMES_NOTEBOOK_TOP_K`, `HERMES_NOTEBOOK_COLLECTIONS`, `HERMES_NOTEBOOK_DATASET`
+y `HERMES_NOTEBOOK_QDRANT_URL`.
+
+**Dónde queda el histórico.** En `notebooks/out/` (ignorada por git), o en la
+carpeta de `HERMES_NOTEBOOK_OUT`:
+
+| Archivo | Contenido |
+|---|---|
+| `history.csv` | una fila por (ejecución × colección): configuración, medias `<puntuación>_mean`, errores `<puntuación>_errors`, `config_hash`, `note` |
+| `history.jsonl` | las mismas filas, un objeto JSON por línea |
+| `<run_id>-detail.csv` | las puntuaciones de cada pregunta de esa ejecución, con la respuesta |
+
+Si una ejecución trae columnas nuevas, las filas antiguas quedan con el valor
+vacío. La última celda recarga el histórico y lo ordena por la puntuación de
+`SORT_BY`. El cuaderno se guarda sin salidas (`uv run just notebook-clean`
+lo comprueba); límpialo antes de hacer commit.
+
 ## Actualizar los módulos fijados
 
 Cada módulo de Hermes está fijado a un commit (o etiqueta) en
@@ -282,7 +371,7 @@ subir uno:
 ## Desarrollo
 
 ```bash
-uv run just check    # lint + pruebas (la misma comprobación que la CI)
+uv run just check    # lint + cuaderno sin salidas + pruebas (la misma comprobación que la CI)
 uv run just fmt      # formato y correcciones automáticas
 uv run pytest -m integration   # pruebas con Ollama y Qdrant reales (se saltan si no responden)
 ```

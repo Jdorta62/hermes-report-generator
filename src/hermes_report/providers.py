@@ -597,6 +597,12 @@ class EchoJudgeClient:
   so its counts and indexes always match. A system message of no metric
   operation (the rule judge) gets a fixed ``partial`` verdict.
 
+  Known limit: the numbered entries are counted from the text, so a chunk that
+  holds a line like ``[2] ...`` (a Markdown reference list) is read as one more
+  chunk. The relevance reply then has more verdicts than chunks, and the
+  metric families that read it end in ``error`` for that question. The
+  encoding is kept as it is; use a real judge for such corpora.
+
   Attributes:
     model: Always ``echo``.
   """

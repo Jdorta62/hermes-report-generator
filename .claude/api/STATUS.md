@@ -1,7 +1,7 @@
 hermes_report.config  :: PASS  99%  task=5.5.4  2026-10-23
 hermes_report.corpus  :: PASS  97%  task=1.1.1  2026-10-21
 hermes_report.questions  :: PASS  99%  task=1.1.1  2026-10-21
-hermes_report.providers  :: PASS  99%  task=5.5.5  2026-10-23
+hermes_report.providers  :: PASS  99%  task=5.5.6  2026-10-23
 hermes_report.ingest  :: PASS  100%  task=4.4.2  2026-10-22
 hermes_report.store  :: PASS  100%  task=3.3.1  2026-10-21
 hermes_report.trace  :: PASS  100%  task=2.2.3  2026-10-21
