@@ -1912,9 +1912,12 @@ class TestWithEchoJudge:
       assert result.status in {"ok", "error", "not_applicable", "skipped"}
       record = result.to_record()
       assert json.loads(json.dumps(record)) == record
-    # The echo reply fits no judge shape, so the families error out, never crash.
-    assert {r.status for r in results} <= {"ok", "error"}
-    assert all(r.error for r in results if r.status == "error")
+    # Since 5.5.5 the echo judge answers every metric operation in the shape the
+    # family expects, so all of them end ``ok`` on a plain item (only a chunk
+    # with a ``[2] ...`` line breaks the relevance reply; see the strict xfail
+    # in test_providers.py).
+    assert {r.status for r in results} == {"ok"}
+    assert all(r.error is None for r in results)
     assert judge.calls
     assert all(c.raw for c in judge.calls)
 

@@ -24,6 +24,12 @@ dev = [
   "ruff>=0.16",
   "rust-just>=1.58",
 ]
+notebook = [
+  "ipykernel>=7.4.0",
+  "jupyterlab>=4.6.4",
+  "nbclient>=0.11.0",
+  "pandas>=3.1.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13"]
@@ -61,6 +67,8 @@ skip_covered = false
 # files, which is what uv installs by default from its cache.
 [tool.uv]
 link-mode = "copy"
+# The notebook test (nbclient) runs in `just check`, so its group is synced too.
+default-groups = ["dev", "notebook"]
 
 # Each module is pinned to a commit of its repository; bump them together.
 [tool.uv.sources]

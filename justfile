@@ -45,8 +45,28 @@ cov MODULES *TESTS:
   fi
   uv run pytest "${cov_args[@]}" --cov-report=term-missing "$@"
 
-# Full repo check: lint + test (the gate before every commit and in CI).
-check: lint test
+# Fail if a notebook under notebooks/ stores outputs or execution counts.
+notebook-clean:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  uv run python - notebooks/*.ipynb <<'PY'
+  import json
+  import sys
+
+  dirty = []
+  for path in sys.argv[1:]:
+    with open(path, encoding="utf-8") as handle:
+      cells = json.load(handle)["cells"]
+    for number, cell in enumerate(cells, start=1):
+      if cell["cell_type"] == "code" and (cell["outputs"] or cell["execution_count"]):
+        dirty.append(f"{path}: cell {number} stores outputs")
+  if dirty:
+    print("\n".join(dirty), file=sys.stderr)
+    sys.exit(1)
+  PY
+
+# Full repo check: lint + notebook outputs + test (the gate before every commit and in CI).
+check: lint notebook-clean test
 
 # Move hand-written .api files into .claude/api/ and rebuild INDEX.api.
 relocate:
