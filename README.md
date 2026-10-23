@@ -351,6 +351,48 @@ vacío. La última celda recarga el histórico y lo ordena por la puntuación de
 `SORT_BY`. El cuaderno se guarda sin salidas (`uv run just notebook-clean`
 lo comprueba); límpialo antes de hacer commit.
 
+## Cuaderno de ingesta
+
+`notebooks/ingest_collections.ipynb` toma una carpeta de Markdown y la ingiere
+de verdad con `hermes-ingest-md` en tantas colecciones de Qdrant como declare
+su `CONFIG`, cada una con sus propios documentos, su troceado y su embedder.
+Mientras trabaja muestra una línea por documento, estadísticas por colección y
+por documento, y una foto de Qdrant antes y después con las diferencias (nuevas,
+reconstruidas, reutilizadas, fallidas, sin tocar). Solo crea o escribe
+colecciones `hermes_report_*`; las demás solo se leen. Deja un manifiesto
+`collections.json` en `notebooks/out/ingest/` (o en `HERMES_INGEST_OUT`).
+
+```python
+CONFIG = {
+  "corpus_dir": "notebooks/data",
+  "qdrant_url": "http://localhost:6333",
+  "force": False,                       # reconstruir aunque no haya cambios
+  "defaults": {
+    "ingest": {"max_chunk_size": 1500, "hard_boundary_levels": [1, 2], "strip_frontmatter": True},
+    "embedding": {"provider": "ollama", "model": "nomic-embed-text"},
+  },
+  "collections": {
+    "hermes_report_golden_agents": {
+      "documents": ["agentes-ia-arquitecturas.md"],   # nombres exactos, sin patrones
+      "ingest": {"max_chunk_size": 800},              # opcional, sobre los valores por defecto
+    },
+  },
+}
+```
+
+Una colección se reutiliza si ya tiene exactamente los mismos puntos y se
+reconstruye en caso contrario (o siempre con `force`). La configuración se
+valida antes de tocar Qdrant u Ollama y el error lista todos los problemas.
+
+Para no editar el cuaderno, `HERMES_INGEST_CONFIG=ruta.json` sustituye `CONFIG`
+por un JSON con la misma forma. `HERMES_INGEST_OUT` cambia la carpeta de salida y
+`HERMES_INGEST_OFFLINE=1` ejecuta sin Ollama ni Qdrant (embedder hash, Qdrant en
+memoria y `examples/demo/corpus`, salvo que el JSON indique otra carpeta).
+
+Para evaluar después las colecciones, copia la lista final del cuaderno
+(«Para rag_evaluation.ipynb») en la clave `collections` de `CONFIG` en
+`notebooks/rag_evaluation.ipynb` y ejecútalo con el mismo `qdrant_url`.
+
 ## Actualizar los módulos fijados
 
 Cada módulo de Hermes está fijado a un commit (o etiqueta) en
