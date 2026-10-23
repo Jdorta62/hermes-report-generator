@@ -252,7 +252,9 @@ def test_top_level_fields(pipeline_env: PipelineEnv, q01: Rec) -> None:
     "generation",
     "rules",
     "judge",
+    "metrics",
   }
+  assert q01["metrics"] is None
   assert q01["spec"] == question.to_dict()
   assert q01["query_id"] == "q01"
   assert q01["error"] is None

@@ -11,10 +11,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from hermes_core import Embedder
+
 from hermes_report.config import RunConfig
 from hermes_report.corpus import Corpus, load_corpus
 from hermes_report.evaluate import judge, judge_messages, rule_verdict
 from hermes_report.ingest import Ingestion, ingest_corpus
+from hermes_report.metrics.adapter import metric_input
+from hermes_report.metrics.base import (
+  Metric,
+  MetricResult,
+  MetricServices,
+  describe,
+)
+from hermes_report.metrics.judge import JudgeSession
+from hermes_report.metrics.runner import ScoreSummary, aggregate, evaluate_metrics
+from hermes_report.metrics.selection import MetricSelection
 from hermes_report.pipeline import PipelineContext, answer_question, build_context
 from hermes_report.providers import (
   JudgeClient,
@@ -35,8 +47,10 @@ from hermes_report.record import (
   IngestDocumentRecord,
   IngestRecord,
   JudgeRecord,
+  MetricsRunRecord,
   QuestionRecord,
   RunRecord,
+  ScoreSummaryRecord,
   message_record,
   write_record,
 )
@@ -93,7 +107,11 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
   late failure never loses the results. Pipeline errors of one question are
   recorded and do not stop the run; the judge runs only for a question that has
   a generation result and no error, and an unexpected failure of the judge is
-  recorded in its record.
+  recorded in its record. Then the selected metric families run on every
+  question (also on one whose pipeline raised) with a fresh judge session, or
+  without a judge when it is disabled; a metric never changes the verdicts or
+  the number of failed questions. ``metrics`` stays ``None`` when
+  ``config.metrics.enabled`` is false.
 
   Args:
     config: The resolved run, with its overrides applied.
@@ -116,6 +134,14 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
   corpus = load_corpus(config.corpus.dir, config.corpus.glob)
   question_set = load_questions(config.questions.file, corpus.sources)
   questions = _select(question_set.questions, config.only)
+  selection = config.metrics
+  selected: tuple[Metric, ...] = ()
+  try:
+    selected = MetricSelection(
+      selection.enabled, selection.include, selection.exclude
+    ).resolve()
+  except Exception as exc:
+    progress(f"· AVISO: no se pudo resolver la selección de métricas ({describe(exc)})")
 
   models = _ollama_models(config)
   if models:
@@ -148,12 +174,20 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
     points = read_points(client, name)
     ctx = build_context(config, client, name, embedder, llm)
     records: list[QuestionRecord] = []
+    results: list[tuple[MetricResult, ...]] = []
     for question in questions:
-      records.append(_answer(question, ctx, judge_client, progress))
+      answered, metric_results = _answer(
+        question, ctx, judge_client, embedder, selected, progress
+      )
+      records.append(answered)
+      results.append(metric_results)
   finally:
     client.close()
 
   finished = datetime.now().astimezone()
+  metrics_record: MetricsRunRecord | None = None
+  if selection.enabled:
+    metrics_record = _metrics_record(selected, results, progress)
   record: RunRecord = {
     "schema": SCHEMA_VERSION,
     "title": config.title,
@@ -168,6 +202,7 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
     "collection": _collection_record(info),
     "points": points,
     "questions": records,
+    "metrics": metrics_record,
   }
   folder = _write(config, record, start)
   return RunOutcome(
@@ -210,9 +245,11 @@ def _answer(
   question: Question,
   ctx: PipelineContext,
   judge_client: JudgeClient | None,
+  embedder: Embedder,
+  selected: tuple[Metric, ...],
   progress: Callable[[str], None],
-) -> QuestionRecord:
-  """Answer and grade one question, and report it."""
+) -> tuple[QuestionRecord, tuple[MetricResult, ...]]:
+  """Answer, grade and measure one question, and report it."""
   begin = time.perf_counter()
   record = answer_question(question, ctx)
   record["rules"] = rule_verdict(question, record)
@@ -224,6 +261,24 @@ def _answer(
     and generation["result"] is not None
   ):
     record["judge"] = _grade(question, record, generation["result"], judge_client)
+  results: tuple[MetricResult, ...] = ()
+  if ctx.config.metrics.enabled:
+    # Metrics never change the run: a failure leaves this question without them.
+    try:
+      item = metric_input(question, record)
+      services = MetricServices(
+        judge=None if judge_client is None else JudgeSession(judge_client, item),
+        embedder=embedder,
+        counter=ctx.token_counter,
+      )
+      results = evaluate_metrics(item, selected, services)
+      record["metrics"] = [result.to_record() for result in results]
+    except Exception as exc:
+      results = ()
+      record["metrics"] = None
+      progress(
+        f"· AVISO {question.id}: las métricas fallaron y se omiten ({describe(exc)})"
+      )
   judged = record["judge"]
   verdict = (judged["verdict"] if judged else None) or _NO_VERDICT
   rules = record["rules"]
@@ -233,7 +288,39 @@ def _answer(
     f"· {question.id} {question.question[:_QUESTION_PREVIEW]} … "
     f"{code} / juez: {verdict} ({seconds:.1f} s)"
   )
-  return record
+  return record, results
+
+
+def _score_record(item: ScoreSummary) -> ScoreSummaryRecord:
+  return {
+    "mean": item.mean,
+    "n": item.n,
+    "not_applicable": item.not_applicable,
+    "skipped": item.skipped,
+    "errors": item.errors,
+  }
+
+
+def _metrics_record(
+  selected: tuple[Metric, ...],
+  results: list[tuple[MetricResult, ...]],
+  progress: Callable[[str], None],
+) -> MetricsRunRecord:
+  """The metrics of the run: the selection and the aggregate of every score.
+
+  A failing aggregate leaves the summary empty and is reported to ``progress``.
+  """
+  try:
+    summary = aggregate(results, selected)
+    records = {score: _score_record(item) for score, item in summary.items()}
+  except Exception as exc:
+    progress(f"· AVISO: no se pudo agregar las métricas ({describe(exc)})")
+    records = {}
+  return {
+    "selection": [metric.name for metric in selected],
+    "scores": [score for metric in selected for score in metric.scores],
+    "summary": records,
+  }
 
 
 def _grade(

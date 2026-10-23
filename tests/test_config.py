@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import MINIMAL
 
 from hermes_report.config import (
   ConfigError,
@@ -20,6 +21,7 @@ from hermes_report.config import (
   GenerationConfig,
   IngestConfig,
   JudgeConfig,
+  MetricsConfig,
   OutputConfig,
   Overrides,
   QdrantConfig,
@@ -147,6 +149,8 @@ def test_dataclass_constructor_defaults() -> None:
     None,
     (),
     False,
+    False,
+    (),
   )
 
 
@@ -1057,6 +1061,7 @@ class TestToDict:
       },
       "judge": {"enabled": True, "provider": "ollama", "model": "qwen3:4b"},
       "output": {"dir": f"{folder}/out", "cache_dir": f"{folder}/.hermes-report-cache"},
+      "metrics": {"enabled": True, "include": [], "exclude": []},
     }
 
   def test_is_plain_json_data(self, write_run: WriteRun) -> None:
@@ -1294,3 +1299,167 @@ class TestToToml:
     assert again.corpus == config.corpus
     assert again.questions == config.questions
     assert again.output == config.output
+
+
+# --- [metrics] (task 5.5.4) ----------------------------------------------------
+
+
+class TestMetricsConfig:
+  def test_defaults(self, write_run: WriteRun) -> None:
+    config = load_config(write_run())
+    assert config.metrics == MetricsConfig(enabled=True, include=(), exclude=())
+
+  def test_section_is_frozen(self) -> None:
+    with pytest.raises(dataclasses.FrozenInstanceError):
+      MetricsConfig().enabled = False  # type: ignore[misc]
+
+  def test_reads_every_key(self, write_run: WriteRun) -> None:
+    config = load_config(
+      write_run(
+        '[metrics]\nenabled = true\ninclude = ["bleu", "rouge_l"]\nexclude = ["cost"]\n'
+      )
+    )
+    assert config.metrics == MetricsConfig(True, ("bleu", "rouge_l"), ("cost",))
+
+  def test_disabled(self, write_run: WriteRun) -> None:
+    assert (
+      load_config(write_run("[metrics]\nenabled = false\n")).metrics.enabled is False
+    )
+
+  @pytest.mark.parametrize("key", ["include", "exclude"])
+  def test_unknown_name_names_the_key_and_lists_options(
+    self, write_run: WriteRun, key: str
+  ) -> None:
+    err = fails(write_run(f'[metrics]\n{key} = ["bleu", "nope"]\n'), f"metrics.{key}")
+    assert "nope" in err.message
+    assert "faithfulness" in err.message  # the options are listed
+
+  def test_unknown_name_is_rejected_even_when_disabled(
+    self, write_run: WriteRun
+  ) -> None:
+    fails(
+      write_run('[metrics]\nenabled = false\ninclude = ["nope"]\n'), "metrics.include"
+    )
+
+  @pytest.mark.parametrize("name", ["BLEU", " bleu", "bleu ", "rouge-l", "", "Bleu"])
+  def test_names_are_exact(self, write_run: WriteRun, name: str) -> None:
+    with pytest.raises(ConfigError) as info:
+      load_config(write_run(f'[metrics]\ninclude = ["{name}"]\n'))
+    assert "metrics.include" in str(info.value)
+
+  @pytest.mark.parametrize(
+    "value", ['"bleu"', "1", "true", "{}", "[1]", "[true]", "[[]]"]
+  )
+  def test_include_must_be_a_list_of_texts(
+    self, write_run: WriteRun, value: str
+  ) -> None:
+    with pytest.raises(ConfigError) as info:
+      load_config(write_run(f"[metrics]\ninclude = {value}\n"))
+    assert "metrics.include" in str(info.value)
+
+  @pytest.mark.parametrize("value", ['"yes"', "1", "0", '"true"', "[]"])
+  def test_enabled_must_be_a_bool(self, write_run: WriteRun, value: str) -> None:
+    fails(write_run(f"[metrics]\nenabled = {value}\n"), "metrics.enabled")
+
+  def test_unknown_key_in_section(self, write_run: WriteRun) -> None:
+    fails(write_run("[metrics]\nselect = []\n"), "metrics.select")
+
+  def test_section_must_be_a_table(self, write_run: WriteRun) -> None:
+    fails(write_run(head='metrics = "all"\n' + MINIMAL), "metrics")
+
+  def test_name_in_both_lists_loads_and_exclude_wins_at_run_time(
+    self, write_run: WriteRun
+  ) -> None:
+    config = load_config(
+      write_run('[metrics]\ninclude = ["bleu"]\nexclude = ["bleu"]\n')
+    )
+    assert config.metrics.include == ("bleu",) == config.metrics.exclude
+
+  def test_overrides_add_to_include_without_duplicates_in_order(
+    self, write_run: WriteRun
+  ) -> None:
+    config = load_config(
+      write_run('[metrics]\ninclude = ["bleu"]\n'),
+      Overrides(metrics=("rouge_l", "bleu", "rouge_l", "bias")),
+    )
+    assert config.metrics.include == ("bleu", "rouge_l", "bias")
+
+  def test_overrides_do_not_touch_exclude_or_enabled(self, write_run: WriteRun) -> None:
+    config = load_config(
+      write_run('[metrics]\nexclude = ["cost"]\n'), Overrides(metrics=("bleu",))
+    )
+    assert config.metrics == MetricsConfig(True, ("bleu",), ("cost",))
+
+  def test_no_metrics_override_disables_and_keeps_the_lists(
+    self, write_run: WriteRun
+  ) -> None:
+    config = load_config(
+      write_run('[metrics]\ninclude = ["bleu"]\n'), Overrides(no_metrics=True)
+    )
+    assert config.metrics == MetricsConfig(False, ("bleu",), ())
+
+  def test_no_metrics_override_beats_enabled_true_and_default_is_off(
+    self, write_run: WriteRun
+  ) -> None:
+    on = load_config(write_run("[metrics]\nenabled = true\n"), Overrides())
+    off = load_config(
+      write_run("[metrics]\nenabled = true\n"), Overrides(no_metrics=True)
+    )
+    assert on.metrics.enabled and not off.metrics.enabled
+
+  @pytest.mark.parametrize("bad", [("nope",), ("bleu", "nope"), ("",), ("BLEU",)])
+  def test_unknown_override_is_a_config_error_with_the_key(
+    self, write_run: WriteRun, bad: tuple[str, ...]
+  ) -> None:
+    err = fails(write_run(), "metrics.include", Overrides(metrics=bad))
+    assert "línea de comandos" in err.message
+
+  def test_override_must_not_be_a_bare_string(self, write_run: WriteRun) -> None:
+    fails(write_run(), "metrics.include", Overrides(metrics="bleu"))  # type: ignore[arg-type]
+
+  def test_override_non_string_item(self, write_run: WriteRun) -> None:
+    fails(write_run(), "metrics.include", Overrides(metrics=(3,)))  # type: ignore[arg-type]
+
+  def test_to_dict_layout(self, write_run: WriteRun) -> None:
+    config = load_config(
+      write_run('[metrics]\nenabled = false\ninclude = ["bleu"]\nexclude = ["cost"]\n')
+    )
+    assert config.to_dict()["metrics"] == {
+      "enabled": False,
+      "include": ["bleu"],
+      "exclude": ["cost"],
+    }
+
+  def test_round_trip_through_to_toml(self, write_run: WriteRun) -> None:
+    config = load_config(
+      write_run(
+        '[metrics]\nenabled = false\ninclude = ["bleu", "bias"]\nexclude = ["cost"]\n'
+      )
+    )
+    saved = config.path.parent / "saved.toml"
+    saved.write_text(config.to_toml(), encoding="utf-8")
+    assert load_config(saved).metrics == config.metrics
+    assert load_config(saved).to_toml() == config.to_toml()
+
+  def test_round_trip_with_overrides_applied(self, write_run: WriteRun) -> None:
+    config = load_config(write_run(), Overrides(metrics=("bleu",), no_metrics=True))
+    saved = config.path.parent / "saved.toml"
+    saved.write_text(config.to_toml(), encoding="utf-8")
+    assert load_config(saved).metrics == MetricsConfig(False, ("bleu",), ())
+
+  def test_runconfig_built_by_hand_without_metrics_still_works(
+    self, write_run: WriteRun
+  ) -> None:
+    config = load_config(write_run())
+    fields = {
+      f.name: getattr(config, f.name)
+      for f in dataclasses.fields(config)
+      if f.name != "metrics"
+    }
+    assert type(config)(**fields).metrics == MetricsConfig()
+
+  def test_unknown_names_in_the_metrics_import_do_not_break_load_without_section(
+    self, write_run: WriteRun
+  ) -> None:
+    # The registry import is lazy; loading must work with no [metrics] at all.
+    assert load_config(write_run()).metrics.include == ()

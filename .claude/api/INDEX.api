@@ -12,6 +12,16 @@
 @mod hermes_report.corpus :: Markdown corpus: the documents of a folder, hashed and sorted -> hermes_report/corpus.api
 @mod hermes_report.evaluate :: Grading of one answer: the rule verdict and the LLM judge, both over records -> hermes_report/evaluate.api
 @mod hermes_report.ingest :: Ingestion of a corpus into Qdrant points, with a per-document cache on disk -> hermes_report/ingest.api
+@mod hermes_report.metrics :: RAG metrics over a neutral input: retrieval, evidence, refusal, cost and judged -> hermes_report/metrics/__init__.api
+@mod hermes_report.metrics.adapter :: Adapter from a run's question record to the neutral metric input -> hermes_report/metrics/adapter.api
+@mod hermes_report.metrics.base :: Metric core: the neutral input, the result, the services and the Metric contract -> hermes_report/metrics/base.api
+@mod hermes_report.metrics.deterministic :: Deterministic metric families: document and evidence retrieval, refusal and cost -> hermes_report/metrics/deterministic.api
+@mod hermes_report.metrics.judge :: Judge operations of one question, memoised, with every call logged -> hermes_report/metrics/judge.api
+@mod hermes_report.metrics.judged :: Judge-based metric families: the RAG triad, answer correctness and citations -> hermes_report/metrics/judged.api
+@mod hermes_report.metrics.optional :: Opt-in metric families: BLEU, ROUGE-L, noise, entities, toxicity and bias -> hermes_report/metrics/optional.api
+@mod hermes_report.metrics.prompts :: Judge prompts (in Spanish) and strict validators of the JSON replies -> hermes_report/metrics/prompts.api
+@mod hermes_report.metrics.runner :: Run metric families over one question and aggregate the scores of a run -> hermes_report/metrics/runner.api
+@mod hermes_report.metrics.selection :: Metric registry and the selection of the families that run -> hermes_report/metrics/selection.api
 @mod hermes_report.pipeline :: Pipeline of one question: retrieve, enrich and generate, recording every phase -> hermes_report/pipeline.api
 @mod hermes_report.providers :: Providers of a run: embedders, LLM clients and judge clients, real and offline -> hermes_report/providers.api
 @mod hermes_report.questions :: Questions file: the JSON battery with expected answers and its rule checks -> hermes_report/questions.api
@@ -19,6 +29,7 @@
 @mod hermes_report.render :: Rendering of a run record as the self-contained ``report.html`` -> hermes_report/render/__init__.api
 @mod hermes_report.render.compare :: The ``compare.html`` of several runs: a pure function of their run records -> hermes_report/render/compare.api
 @mod hermes_report.render.html :: HTML helpers shared by every renderer of the report, and the page itself -> hermes_report/render/html.api
+@mod hermes_report.render.metrics :: The "Métricas" section of a question tab: scores, details and judge calls -> hermes_report/render/metrics.api
 @mod hermes_report.render.question :: One question tab of the report: its evaluation, document map and every phase -> hermes_report/render/question.api
 @mod hermes_report.render.run :: The ``report.html`` of a run: a pure function of the run record -> hermes_report/render/run.api
 @mod hermes_report.render.score :: Question ids and the score tiles that the run report and the comparison share -> hermes_report/render/score.api

@@ -5,6 +5,7 @@
 
 k RULE_VERDICTS: Final = ...
 k JUDGE_VERDICTS: Final = ("correct", "partial", "incorrect")
+f is_refused(result: Mapping[str, Any]) -> bool :: Whether a generation result is the insufficient-sources reply
 f rule_verdict(question: Question, record: QuestionRecord) -> RuleRecord :: Grade one answer by rules, from the record alone
 f judge_messages(question: Question, answer: str, status: str) -> tuple[PromptMessage, ...] :: Return the system and user messages (in Spanish) that ask the judge to grade
 f judge(question: Question, record: QuestionRecord, client: JudgeClient) -> JudgeRecord | None :: Grade the answer of ``record`` with the LLM judge; ``None`` without a result

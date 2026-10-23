@@ -13,13 +13,20 @@ from hermes_report.render.html import (
   card,
   esc,
   link,
+  metric_label,
   page,
   seconds,
   status_pill,
   table,
   write_html,
 )
-from hermes_report.render.score import question_id, score_tiles
+from hermes_report.render.score import (
+  format_score,
+  metric_tiles,
+  question_id,
+  score_cell,
+  score_tiles,
+)
 
 __all__ = ["render_compare", "write_compare"]
 
@@ -179,6 +186,17 @@ def _score_table(runs: Sequence[tuple[str, RunRecord]], labels: Sequence[str]) -
     + "</tr>"
     for position in range(len(tiles[0]))
   ]
+  # The metric means: one row per score any run has, a dash where a run lacks it.
+  metrics = [dict(metric_tiles(record)) for _, record in runs]
+  rows += [
+    f"<tr><td>{esc(label)}</td>"
+    + "".join(
+      f'<td class="num-cell">{esc(run[label]) if label in run else NO_DATA}</td>'
+      for run in metrics
+    )
+    + "</tr>"
+    for label in dict.fromkeys(label for run in metrics for label in run)
+  ]
   return table(
     [("", False), *((label, True) for label in labels)],
     rows,
@@ -200,6 +218,8 @@ def _matrix_panel(runs: Sequence[tuple[str, RunRecord]], labels: Sequence[str]) 
     by_run.append(found)
   ids = list(dict.fromkeys(qid for found in by_run for qid in found))
   rows = [_matrix_row(qid, texts[qid], runs, by_run) for qid in ids]
+  if rows:
+    rows += _score_groups(ids, texts, runs, by_run)
   body = (
     table(
       [("id", False), ("pregunta", False), *((label, False) for label in labels)], rows
@@ -232,6 +252,55 @@ def _matrix_row(
     f'<tr{css} data-q="{esc(qid)}"><td><b>{esc(qid)}</b></td><td>{esc(text)}</td>'
     f"{cells}</tr>"
   )
+
+
+def _scores(runs: Sequence[tuple[str, RunRecord]]) -> list[str]:
+  """The scores any run recorded, in the order of their first appearance."""
+  found: dict[str, None] = {}
+  for _, record in runs:
+    metrics = record.get("metrics")
+    for score in metrics["scores"] if metrics else ():
+      found.setdefault(score)
+  return list(found)
+
+
+def _mean(record: RunRecord, score: str) -> str:
+  metrics = record.get("metrics")
+  entry = metrics["summary"].get(score) if metrics else None
+  if entry is None or entry["mean"] is None:
+    return NO_DATA
+  return esc(format_score(entry["mean"]))
+
+
+def _score_groups(
+  ids: Sequence[str],
+  texts: Mapping[str, str],
+  runs: Sequence[tuple[str, RunRecord]],
+  by_run: Sequence[Mapping[str, QuestionRecord]],
+) -> list[str]:
+  """Per score, a row with its mean in each run, then one row per question.
+
+  A run without metrics, or without the question, shows a dash.
+  """
+  rows: list[str] = []
+  for score in _scores(runs):
+    rows.append(
+      f'<tr><td colspan="2"><b>{esc(metric_label(score))}</b> '
+      '<span class="muted">media</span></td>'
+      + "".join(
+        f'<td class="num-cell"><b>{_mean(record, score)}</b></td>' for _, record in runs
+      )
+      + "</tr>"
+    )
+    for qid in ids:
+      cells = "".join(
+        f'<td class="num-cell">{score_cell(found[qid], score)}</td>'
+        if qid in found
+        else f"<td>{NO_DATA}</td>"
+        for found in by_run
+      )
+      rows.append(f"<tr><td>{esc(qid)}</td><td>{esc(texts[qid])}</td>{cells}</tr>")
+  return rows
 
 
 def _rule_verdict(item: QuestionRecord) -> str | None:

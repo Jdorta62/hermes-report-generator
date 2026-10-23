@@ -22,12 +22,14 @@ from hermes_report.render.html import (
   grid,
   json_block,
   link,
+  messages_block,
   seconds,
   section,
   status_pill,
   table,
   yes_no,
 )
+from hermes_report.render.metrics import metrics_body, metrics_summary
 
 __all__ = ["QuestionContext", "chunk_usage", "disagree", "question_panel"]
 
@@ -301,6 +303,7 @@ class _Panel:
         self._llm(),
         self._outcome(),
         self._judge(),
+        self._metrics(),
       )
       if block is not None
     ]
@@ -620,7 +623,7 @@ class _Panel:
       "Prompt enviado",
       "Prompt",
       summary,
-      _messages(prompt),
+      messages_block(prompt),
     )
 
   # -- L LLM --
@@ -726,7 +729,7 @@ class _Panel:
         ]
       )
       + "<h4>Mensajes enviados</h4>"
-      + _messages(judge["messages"])
+      + messages_block(judge["messages"])
       + "<h4>Respuesta cruda</h4>"
       + (
         f'<pre class="text raw">{esc(judge["raw"])}</pre>'
@@ -741,6 +744,21 @@ class _Panel:
       "error" if judge["error"] else JUDGE_LABELS.get(verdict or "", verdict or "—")
     )
     return _Block(self._anchor("judge"), "J", "Juez", "Juez", summary, body)
+
+  # -- M Métricas --
+
+  def _metrics(self) -> _Block | None:
+    results = self.item.get("metrics")
+    if not results:
+      return None
+    return _Block(
+      self._anchor("metrics"),
+      "M",
+      "Métricas",
+      "Métricas",
+      metrics_summary(results),
+      metrics_body(results),
+    )
 
   # -- document map --
 
@@ -858,16 +876,6 @@ def _chunk_ids(context: Mapping[str, Any]) -> list[str]:
 
 def _piece_ids(piece: Mapping[str, Any]) -> list[str]:
   return [chunk["chunk_id"] for chunk in piece["chunks"]]
-
-
-def _messages(messages: Sequence[Mapping[str, Any]]) -> str:
-  if not messages:
-    return '<p class="muted">Sin mensajes.</p>'
-  return "".join(
-    f'<div class="msg {esc(m["role"])}"><div class="role">{esc(m["role"])}</div>'
-    f'<pre class="text">{esc(m["content"])}</pre></div>'
-    for m in messages
-  )
 
 
 # --- evaluation card ---------------------------------------------------------------------

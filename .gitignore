@@ -16,6 +16,7 @@ htmlcov/
 
 # Runs, ingestion cache and the downloaded Quijote (never committed)
 out/
+notebooks/out/
 .hermes-report-cache/
 examples/*/data/
 examples/quijote/corpus/

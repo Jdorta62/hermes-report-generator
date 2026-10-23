@@ -15,6 +15,7 @@ from hermes_core.retrieval import RetrievedChunk, SearchedQuery
 from hermes_enrich import ChunkRange
 
 __all__ = [
+  "READABLE_SCHEMAS",
   "SCHEMA_VERSION",
   "ChunkRangeRecord",
   "ChunkRefRecord",
@@ -27,9 +28,12 @@ __all__ = [
   "GenerationRecord",
   "IngestDocumentRecord",
   "IngestRecord",
+  "JudgeCallRecord",
   "JudgeRecord",
   "LLMCallRecord",
   "MessageRecord",
+  "MetricResultRecord",
+  "MetricsRunRecord",
   "PieceRecord",
   "PointRecord",
   "QuestionRecord",
@@ -38,6 +42,7 @@ __all__ = [
   "RetrievedChunkRecord",
   "RuleRecord",
   "RunRecord",
+  "ScoreSummaryRecord",
   "SearchedQueryRecord",
   "StepRecord",
   "StoreReadRecord",
@@ -55,7 +60,8 @@ __all__ = [
   "write_record",
 ]
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
+READABLE_SCHEMAS: Final = (1, 2)
 
 _HEAD_LENGTH = 8
 # Everything reading, parsing or writing a user-given path or file can raise.
@@ -301,6 +307,46 @@ class JudgeRecord(TypedDict):
   error: str | None
 
 
+class JudgeCallRecord(TypedDict):
+  """One judge call made by a metric operation."""
+
+  purpose: str
+  messages: list[MessageRecord]
+  raw: str | None
+  error: str | None
+  seconds: float
+
+
+class MetricResultRecord(TypedDict):
+  """The outcome of one metric family for one question."""
+
+  name: str
+  status: str
+  scores: dict[str, float | None]
+  details: dict[str, Any]
+  calls: list[JudgeCallRecord]
+  error: str | None
+  seconds: float
+
+
+class ScoreSummaryRecord(TypedDict):
+  """The aggregate of one score over a run."""
+
+  mean: float | None
+  n: int
+  not_applicable: int
+  skipped: int
+  errors: int
+
+
+class MetricsRunRecord(TypedDict):
+  """The metrics of a run: what was selected and the mean of every score."""
+
+  selection: list[str]
+  scores: list[str]
+  summary: dict[str, ScoreSummaryRecord]
+
+
 class QuestionRecord(TypedDict):
   """Everything that happened to one question."""
 
@@ -313,6 +359,7 @@ class QuestionRecord(TypedDict):
   generation: GenerationRecord | None
   rules: RuleRecord | None
   judge: JudgeRecord | None
+  metrics: list[MetricResultRecord] | None
 
 
 class RunRecord(TypedDict):
@@ -331,6 +378,7 @@ class RunRecord(TypedDict):
   collection: CollectionRecord
   points: list[PointRecord]
   questions: list[QuestionRecord]
+  metrics: MetricsRunRecord | None
 
 
 # --- converters ---------------------------------------------------------------
@@ -470,10 +518,13 @@ def _reject_constant(name: str) -> NoReturn:
 def read_record(path: Path) -> RunRecord:
   """Read a run record; the object loaded is cast, not deeply validated.
 
+  Schema 1 records are read too: they get ``metrics`` set to ``None`` on the
+  run and on every question.
+
   Raises:
     RecordError: if the file is missing or unreadable, is not valid JSON or
-      not an object, or its ``schema`` is missing or differs from
-      ``SCHEMA_VERSION``; the error names the file.
+      not an object, or its ``schema`` is missing or not one of
+      ``READABLE_SCHEMAS``; the error names the file.
 
   Effects: io
   """
@@ -496,9 +547,16 @@ def read_record(path: Path) -> RunRecord:
   schema = data["schema"]
   if isinstance(schema, bool) or not isinstance(schema, int):
     raise RecordError(path, "'schema' debe ser un número entero")
-  if schema != SCHEMA_VERSION:
+  if schema not in READABLE_SCHEMAS:
+    expected = " o ".join(str(version) for version in READABLE_SCHEMAS)
     raise RecordError(
-      path,
-      f"versión de esquema {schema} no soportada; se esperaba {SCHEMA_VERSION}",
+      path, f"versión de esquema {schema} no soportada; se esperaba {expected}"
     )
+  if schema == 1:
+    data["metrics"] = None
+    questions = data.get("questions")
+    if isinstance(questions, list):
+      for question in questions:
+        if isinstance(question, dict):
+          question["metrics"] = None
   return cast("RunRecord", data)

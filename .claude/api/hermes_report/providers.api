@@ -39,10 +39,10 @@ C OllamaJudgeClient :: Judge over Ollama chat with ``format="json"`` at temperat
   a model: str; host: str
   m complete_json(messages: Sequence[PromptMessage]) -> str ! TypeError, ValueError, ProviderError ~net :: Send ``messages`` to Ollama and return the content of its reply
 
-C EchoJudgeClient :: Offline judge: always replies a ``partial`` verdict as JSON
+C EchoJudgeClient :: Offline judge: a valid, deterministic JSON reply for every judge operation
   reg: judge_client[echo]
   a model: str = "echo"
-  m complete_json(messages: Sequence[PromptMessage]) -> str ! TypeError, ValueError :: Return the fixed ``partial`` verdict as JSON text
+  m complete_json(messages: Sequence[PromptMessage]) -> str ! TypeError, ValueError :: Return the reply of the operation that ``messages`` ask for, as JSON text
 
 f make_embedder(config: EmbeddingConfig) -> Embedder ! TypeError, ValueError, ProviderError :: Build the embedder of ``config``: ``ollama`` or ``hash``
 f make_llm(config: GenerationConfig) -> LLMClient ! TypeError, ValueError, ProviderError :: Build the LLM client of ``config``: ``ollama`` or ``echo``

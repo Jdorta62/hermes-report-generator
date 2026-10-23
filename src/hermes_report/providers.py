@@ -7,9 +7,9 @@ import json
 import math
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from numbers import Real
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
 
 import ollama
 from hermes_core.generation import PromptMessage
@@ -53,6 +53,14 @@ _ECHO_VERDICT = {
   "verdict": "partial",
   "reason": "juez simulado: no evalúa la respuesta",
 }
+_ECHO_NO_FLAG = "juez simulado: sin marcas"
+_ECHO_NO_MARKERS = "El texto no lleva marcadores"
+_ECHO_TEXT = re.compile(r"\nRespuesta( esperada)?:\n")
+_ECHO_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_ECHO_MARKER = re.compile(r"\[(\d+)\]")
+_ECHO_LEADING = re.compile(r"^(?:\[\d+\]\s*)+")
+_ECHO_COUNT = re.compile(r"Número de preguntas: (\d+)")
+_ECHO_ENTITY = re.compile(r"[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{2,}|\d[\w.,:]*\d|\d")
 
 
 class ProviderError(Exception):
@@ -474,10 +482,126 @@ class OllamaJudgeClient:
     return content
 
 
+def _numbered_count(block: str) -> int:
+  """How many ``[1] ...``, ``[2] ...`` entries the numbered ``block`` holds."""
+  count = 0
+  position = 0
+  while True:
+    marker = f"[{count + 1}] "
+    if count == 0:
+      found = 0 if block.startswith(marker) else -1
+    else:
+      found = block.find(f"\n{marker}", position)
+    if found < 0:
+      return count
+    count += 1
+    position = found + 1
+
+
+def _add_markers(claim: dict[str, Any], text: str, cites: bool) -> None:
+  """Add the ``[n]`` markers of ``text`` to the citations of ``claim``."""
+  if not cites:
+    return
+  for number in (int(n) for n in _ECHO_MARKER.findall(text)):
+    if number not in claim["citations"]:
+      claim["citations"].append(number)
+
+
+def _echo_claims(system: str, user: str) -> dict[str, Any]:
+  """One claim per sentence of the text; a marker after the full stop goes back."""
+  found = _ECHO_TEXT.search(user)
+  text = user[found.end() :] if found else user
+  cites = _ECHO_NO_MARKERS not in system
+  claims: list[dict[str, Any]] = []
+  for raw in _ECHO_SPLIT.split(text.strip()):
+    fragment = raw.strip()
+    lead = _ECHO_LEADING.match(fragment)
+    if lead is not None and claims:
+      _add_markers(claims[-1], lead.group(0), cites)
+      fragment = fragment[lead.end() :].strip()
+    sentence = " ".join(_ECHO_MARKER.sub(" ", fragment).split())
+    if sentence:
+      claims.append({"text": sentence, "citations": []})
+      _add_markers(claims[-1], fragment, cites)
+  return {"claims": claims}
+
+
+def _echo_verify(system: str, user: str) -> dict[str, Any]:
+  """Every claim supported by source 1."""
+  claims = user.rpartition("\n\nAfirmaciones:\n")[2]
+  return {
+    "verdicts": [
+      {"claim": n, "supported": True, "sources": [1]}
+      for n in range(1, _numbered_count(claims) + 1)
+    ]
+  }
+
+
+def _echo_relevance(system: str, user: str) -> dict[str, Any]:
+  """Every chunk relevant."""
+  chunks = user.partition("\n\nFragmentos:\n")[2]
+  return {
+    "verdicts": [
+      {"chunk": n, "relevant": True} for n in range(1, _numbered_count(chunks) + 1)
+    ]
+  }
+
+
+def _echo_questions(system: str, user: str) -> dict[str, Any]:
+  """The first sentence of the answer as a question, as many times as asked."""
+  match = _ECHO_COUNT.match(user)
+  count = int(match.group(1)) if match else 3
+  answer = user.partition("\nRespuesta:\n")[2]
+  sentence = " ".join(_ECHO_MARKER.sub(" ", _first_sentence(answer)).split())
+  sentence = sentence.strip(" .!?¿#*-")
+  question = f"¿{sentence}?" if sentence else "¿Qué dice la respuesta?"
+  return {"questions": [question] * count, "noncommittal": False}
+
+
+def _echo_entities(system: str, user: str) -> dict[str, Any]:
+  """The capitalised words and the numbers of the text, once each."""
+  text = user.partition("Texto:\n")[2]
+  return {"entities": list(dict.fromkeys(_ECHO_ENTITY.findall(text)))}
+
+
+def _echo_toxic(system: str, user: str) -> dict[str, Any]:
+  return {"toxic": False, "reason": _ECHO_NO_FLAG}
+
+
+def _echo_biased(system: str, user: str) -> dict[str, Any]:
+  return {"biased": False, "reason": _ECHO_NO_FLAG}
+
+
+# The shape the system message asks for -> the function that builds the reply.
+# The first marker found in the system message wins.
+_ECHO_OPERATIONS: Final[
+  tuple[tuple[str, Callable[[str, str], dict[str, Any]]], ...]
+] = (
+  ('{"claims"', _echo_claims),
+  ('{"verdicts": [{"claim"', _echo_verify),
+  ('{"verdicts": [{"chunk"', _echo_relevance),
+  ('{"questions"', _echo_questions),
+  ('{"entities"', _echo_entities),
+  ('{"toxic"', _echo_toxic),
+  ('{"biased"', _echo_biased),
+)
+
+
 class EchoJudgeClient:
-  """Offline judge: always replies a ``partial`` verdict as JSON.
+  """Offline judge: a valid, deterministic JSON reply for every judge operation.
 
   Registry: judge_client[echo]
+
+  The operation is recognised from the JSON shape that the system message asks
+  for, and the reply is derived from the numbered texts of the user message,
+  so its counts and indexes always match. A system message of no metric
+  operation (the rule judge) gets a fixed ``partial`` verdict.
+
+  Known limit: the numbered entries are counted from the text, so a chunk that
+  holds a line like ``[2] ...`` (a Markdown reference list) is read as one more
+  chunk. The relevance reply then has more verdicts than chunks, and the
+  metric families that read it end in ``error`` for that question. The
+  encoding is kept as it is; use a real judge for such corpora.
 
   Attributes:
     model: Always ``echo``.
@@ -486,13 +610,18 @@ class EchoJudgeClient:
   model: str = "echo"
 
   def complete_json(self, messages: Sequence[PromptMessage]) -> str:
-    """Return the fixed ``partial`` verdict as JSON text.
+    """Return the reply of the operation that ``messages`` ask for, as JSON text.
 
     Raises:
       TypeError: ``messages`` is not a sequence of messages.
       ValueError: ``messages`` is empty.
     """
-    _check_messages(messages)
+    items = _check_messages(messages)
+    system = "\n".join(m.content for m in items if m.role == "system")
+    user = next((m.content for m in reversed(items) if m.role == "user"), "")
+    for marker, build in _ECHO_OPERATIONS:
+      if marker in system:
+        return json.dumps(build(system, user), ensure_ascii=False)
     return json.dumps(_ECHO_VERDICT, ensure_ascii=False)
 
 
