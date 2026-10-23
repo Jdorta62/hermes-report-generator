@@ -7,7 +7,11 @@ f claims_messages(text: str, kind: Literal["answer", "expected"], question: str)
 f verify_messages(claims: Sequence[Claim], sources: Sequence[str]) -> tuple[PromptMessage, ...] :: Messages that ask the judge which numbered sources support each claim
 f relevance_messages(question: str, expected: str, chunks: Sequence[str]) -> tuple[PromptMessage, ...] :: Messages that ask the judge whether each numbered chunk is relevant
 f questions_messages(answer: str, n: int = 3) -> tuple[PromptMessage, ...] :: Messages that ask the judge for ``n`` questions the answer would resolve
+f entities_messages(text: str) -> tuple[PromptMessage, ...] :: Messages that ask the judge for the named entities of ``text``
+f flag_messages(answer: str, kind: Literal["toxic", "biased"]) -> tuple[PromptMessage, ...] :: Messages that ask the judge whether ``answer`` is toxic or biased
 f parse_claims(data: Any) -> tuple[Claim, ...] ! MetricError :: Validate the claims reply: ``{"claims": [{"text", "citations"}]}``
 f parse_verdicts(data: Any, n_claims: int, n_sources: int) -> tuple[ClaimVerdict, ...] ! MetricError :: Validate the verify reply, one verdict per claim, in claim order
 f parse_relevance(data: Any, n_chunks: int) -> tuple[bool, ...] ! MetricError :: Validate the relevance reply, one verdict per chunk, in chunk order
 f parse_questions(data: Any) -> tuple[tuple[str, ...], bool] ! MetricError :: Validate the questions reply: ``{"questions": [str], "noncommittal": bool}``
+f parse_entities(data: Any) -> tuple[str, ...] ! MetricError :: Validate the entities reply: ``{"entities": [str]}``; repeats are dropped
+f parse_flag(data: Any, kind: Literal["toxic", "biased"]) -> tuple[bool, str] ! MetricError :: Validate the flag reply: ``{"toxic" | "biased": bool, "reason": str}``

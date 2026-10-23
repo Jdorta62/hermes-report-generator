@@ -231,11 +231,19 @@ DESIGN_ORDER = [
   "answer_correctness",
   "citations",
 ]
+OPTIONAL_ORDER = [
+  "bleu",
+  "rouge_l",
+  "noise_sensitivity",
+  "context_entity_recall",
+  "toxicity",
+  "bias",
+]
 
 
 class TestRegistry:
   def test_order_is_the_design_table(self) -> None:
-    assert list(METRICS) == DESIGN_ORDER
+    assert list(METRICS) == [*DESIGN_ORDER, *OPTIONAL_ORDER]
 
   @pytest.mark.parametrize(
     ("name", "scores", "needs", "requires"),
@@ -1914,7 +1922,7 @@ class TestWithEchoJudge:
     item = make_item(documents=("a.md",), evidence=("Tajo",))
     services, _ = services_for(EchoJudgeClient(), item, HashEmbedder())
     results = evaluate_metrics(item, list(METRICS.values()), services)
-    assert [r.name for r in results] == DESIGN_ORDER
+    assert [r.name for r in results] == [*DESIGN_ORDER, *OPTIONAL_ORDER]
     assert all(r.status in {"ok", "error", "not_applicable"} for r in results)
 
   def test_bare_item_with_a_judge_never_raises(self) -> None:
