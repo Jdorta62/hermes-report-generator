@@ -58,6 +58,15 @@ def _parser() -> argparse.ArgumentParser:
   run_parser.add_argument(
     "--no-judge", action="store_true", help="no evaluar con el juez LLM"
   )
+  run_parser.add_argument(
+    "--no-metrics", action="store_true", help="no calcular las métricas RAG"
+  )
+  run_parser.add_argument(
+    "--metric",
+    action="append",
+    metavar="NOMBRE",
+    help="añade una familia de métricas opcional (se puede repetir)",
+  )
   run_parser.add_argument("--top-k", type=int, metavar="N", help="chunks recuperados")
   run_parser.add_argument(
     "--budget", type=int, metavar="N", help="tokens máximos del contexto"
@@ -186,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     out=args.out,
     only=tuple(args.only or ()),
     reingest=args.reingest,
+    no_metrics=args.no_metrics,
+    metrics=tuple(args.metric or ()),
   )
   try:
     outcome = run(load_config(args.run_toml, overrides))

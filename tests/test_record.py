@@ -26,6 +26,7 @@ from hermes_core.retrieval import RetrievedChunk, SearchedQuery
 from hermes_enrich import ChunkRange
 
 from hermes_report.record import (
+  READABLE_SCHEMAS,
   SCHEMA_VERSION,
   RecordError,
   RunRecord,
@@ -606,6 +607,25 @@ def make_record() -> RunRecord:
           "raw": None,
           "error": None,
         },
+        "metrics": [
+          {
+            "name": "doc_retrieval",
+            "status": "ok",
+            "scores": {"doc_hit": 1.0, "doc_mrr": None},
+            "details": {"ranks": [1]},
+            "calls": [
+              {
+                "purpose": "answer_claims",
+                "messages": messages,
+                "raw": "{}",
+                "error": None,
+                "seconds": 0.2,
+              }
+            ],
+            "error": None,
+            "seconds": 0.01,
+          }
+        ],
       },
       {
         "spec": {},
@@ -617,8 +637,29 @@ def make_record() -> RunRecord:
         "generation": None,
         "rules": None,
         "judge": None,
+        "metrics": None,
       },
     ],
+    "metrics": {
+      "selection": ["doc_retrieval"],
+      "scores": ["doc_hit", "doc_mrr"],
+      "summary": {
+        "doc_hit": {
+          "mean": 1.0,
+          "n": 1,
+          "not_applicable": 0,
+          "skipped": 0,
+          "errors": 0,
+        },
+        "doc_mrr": {
+          "mean": None,
+          "n": 0,
+          "not_applicable": 1,
+          "skipped": 0,
+          "errors": 0,
+        },
+      },
+    },
   }
 
 
@@ -654,7 +695,7 @@ class TestWriteRecord:
     assert "日本" in text
     assert "áéí" in text
     assert "\\u" not in text
-    assert text.startswith('{\n "schema": 1,\n "title": "Prueba",')
+    assert text.startswith('{\n "schema": 2,\n "title": "Prueba",')
     assert text == json.dumps(make_record(), ensure_ascii=False, indent=1)
 
   def test_bad_record_leaves_no_file_and_no_folder(self, tmp_path: Path) -> None:
@@ -817,7 +858,7 @@ class TestReadRecord:
     err = self.raises(self.put(tmp_path, "{}"))
     assert "schema" in err.message
 
-  @pytest.mark.parametrize("schema", [0, 2, -1, 99])
+  @pytest.mark.parametrize("schema", [0, 3, -1, 99])
   def test_other_version(self, tmp_path: Path, schema: int) -> None:
     err = self.raises(self.put(tmp_path, json.dumps({"schema": schema})))
     assert str(schema) in err.message
@@ -836,7 +877,8 @@ class TestReadRecord:
 
   def test_minimal_valid_returns_object_untouched(self, tmp_path: Path) -> None:
     out = read_record(self.put(tmp_path, '{"schema": 1, "extra": [1, 2]}'))
-    assert out == {"schema": 1, "extra": [1, 2]}
+    # A schema-1 record only gains ``metrics=None`` on the run.
+    assert out == {"schema": 1, "extra": [1, 2], "metrics": None}
 
   def test_accepts_utf8_with_non_ascii(self, tmp_path: Path) -> None:
     path = self.put(tmp_path, '{"schema": 1, "title": "áéí 日本"}')
@@ -853,6 +895,70 @@ class TestReadRecord:
     assert out["points"] == "nope"
 
 
+class TestSchemaMigration:
+  """Schema 1 stays readable (task 5.5.4); schema 2 is read as written."""
+
+  def put(self, tmp_path: Path, data: Any) -> Path:
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+  def test_readable_schemas(self) -> None:
+    assert READABLE_SCHEMAS == (1, 2)
+    assert SCHEMA_VERSION in READABLE_SCHEMAS
+
+  def test_schema_1_gets_metrics_none_on_run_and_every_question(
+    self, tmp_path: Path
+  ) -> None:
+    data = {"schema": 1, "questions": [{"query_id": "a"}, {"query_id": "b"}]}
+    out: Any = read_record(self.put(tmp_path, data))
+    assert out["metrics"] is None
+    assert [q["metrics"] for q in out["questions"]] == [None, None]
+    assert [q["query_id"] for q in out["questions"]] == ["a", "b"]
+
+  def test_schema_1_with_no_questions_or_odd_questions_does_not_crash(
+    self, tmp_path: Path
+  ) -> None:
+    empty = read_record(self.put(tmp_path, {"schema": 1, "questions": []}))
+    assert empty["metrics"] is None
+    for questions in (None, "x", 3, {"a": 1}, [1, "x", None, {"q": 1}]):
+      out: Any = read_record(self.put(tmp_path, {"schema": 1, "questions": questions}))
+      assert out["metrics"] is None
+
+  def test_schema_1_odd_questions_only_dicts_are_filled(self, tmp_path: Path) -> None:
+    out: Any = read_record(
+      self.put(tmp_path, {"schema": 1, "questions": [1, {"q": 1}]})
+    )
+    assert out["questions"] == [1, {"q": 1, "metrics": None}]
+
+  def test_schema_2_is_not_touched(self, tmp_path: Path) -> None:
+    data = {"schema": 2, "questions": [{"query_id": "a"}], "extra": 1}
+    assert read_record(self.put(tmp_path, data)) == data
+
+  def test_schema_2_keeps_the_metrics(self, tmp_path: Path) -> None:
+    path = tmp_path / "run.json"
+    record = make_record()
+    write_record(record, path)
+    out = read_record(path)
+    assert out == record
+    assert out["metrics"] is not None
+    assert out["questions"][0]["metrics"] is not None
+    assert out["questions"][1]["metrics"] is None
+
+  def test_schema_3_is_rejected_naming_both_readable_versions(
+    self, tmp_path: Path
+  ) -> None:
+    with pytest.raises(RecordError) as info:
+      read_record(self.put(tmp_path, {"schema": 3}))
+    assert "3" in info.value.message
+    assert "1 o 2" in info.value.message
+
+  @pytest.mark.parametrize("schema", [True, False, 2.0, 1.0, "2", None])
+  def test_schema_of_other_types_is_rejected(self, tmp_path: Path, schema: Any) -> None:
+    with pytest.raises(RecordError):
+      read_record(self.put(tmp_path, {"schema": schema}))
+
+
 class TestRecordError:
   def test_attributes_and_str(self) -> None:
     err = RecordError(Path("/x/run.json"), "el archivo no existe")
@@ -860,5 +966,5 @@ class TestRecordError:
     assert str(err) == "/x/run.json: el archivo no existe"
     assert isinstance(err, Exception)
 
-  def test_schema_version_is_one(self) -> None:
-    assert SCHEMA_VERSION == 1
+  def test_schema_version_is_two(self) -> None:
+    assert SCHEMA_VERSION == 2

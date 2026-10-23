@@ -13,6 +13,7 @@
 @mod hermes_report.evaluate :: Grading of one answer: the rule verdict and the LLM judge, both over records -> hermes_report/evaluate.api
 @mod hermes_report.ingest :: Ingestion of a corpus into Qdrant points, with a per-document cache on disk -> hermes_report/ingest.api
 @mod hermes_report.metrics :: RAG metrics over a neutral input: retrieval, evidence, refusal, cost and judged -> hermes_report/metrics/__init__.api
+@mod hermes_report.metrics.adapter :: Adapter from a run's question record to the neutral metric input -> hermes_report/metrics/adapter.api
 @mod hermes_report.metrics.base :: Metric core: the neutral input, the result, the services and the Metric contract -> hermes_report/metrics/base.api
 @mod hermes_report.metrics.deterministic :: Deterministic metric families: document and evidence retrieval, refusal and cost -> hermes_report/metrics/deterministic.api
 @mod hermes_report.metrics.judge :: Judge operations of one question, memoised, with every call logged -> hermes_report/metrics/judge.api

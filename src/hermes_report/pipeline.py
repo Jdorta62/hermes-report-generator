@@ -253,8 +253,8 @@ def answer_question(question: Question, ctx: PipelineContext) -> QuestionRecord:
 
   Never raises for pipeline errors: the first failing phase sets ``error``,
   keeps the records of the finished phases and what the failing one had
-  recorded, and leaves the later phases ``None``. ``rules`` and ``judge`` are
-  left ``None`` for the grader.
+  recorded, and leaves the later phases ``None``. ``rules``, ``judge`` and
+  ``metrics`` are left ``None`` for the grader.
   """
   begin = time.perf_counter()
   query = UserQuery(text=question.question, query_id=question.id)
@@ -281,4 +281,5 @@ def answer_question(question: Question, ctx: PipelineContext) -> QuestionRecord:
     "generation": generation_record,
     "rules": None,
     "judge": None,
+    "metrics": None,
   }
