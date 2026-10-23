@@ -372,17 +372,51 @@ class TestOfflineRun:
       execute(notebook)
     assert not (offline / "history.csv").exists()
 
-  @pytest.mark.xfail(
-    strict=True,
-    raises=CellExecutionError,
-    reason=(
-      "known gap: with an empty dataset the cell s5-example does "
-      "items[collection][0] and raises IndexError, so no history row is written"
-    ),
+  @pytest.mark.parametrize(
+    "content", ["[]", '{"questions": []}', '{"title": "x", "questions": []}']
   )
-  def test_an_empty_dataset_does_not_crash_or_write_garbage(
-    self, offline: Path, tmp_path: Path
+  def test_an_empty_dataset_writes_one_row_with_zero_questions(
+    self, offline: Path, tmp_path: Path, content: str
   ) -> None:
+    dataset = tmp_path / "empty.json"
+    dataset.write_text(content, encoding="utf-8")
+    notebook = load()
+    insert_after(
+      notebook, "s2-code", f'CONFIG["dataset"] = {str(dataset)!r}\n', "t-dataset"
+    )
+    executed = execute(notebook)
+    for cell in executed.cells:
+      if cell.cell_type == "code":
+        assert not any(o.output_type == "error" for o in cell.outputs), cell.get("id")
+    assert "No hay preguntas" in stream_text(executed, "s5-example")
+
+    rows = read_csv(offline / "history.csv")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["collection"] == "hermes_report_notebook_demo"
+    assert row["n_questions"] == "0"
+    assert row["seconds_mean"] == ""
+    means = [k for k in row if k.endswith("_mean")]
+    errors = [k for k in row if k.endswith("_errors")]
+    assert means
+    assert errors
+    for key in means:
+      assert row[key] == "", key
+    for key in errors:
+      assert row[key] == "0", key
+    lines = read_jsonl(offline / "history.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["n_questions"] == 0
+    assert lines[0]["run_id"] == row["run_id"]
+    detail = offline / f"{row['run_id']}-detail.csv"
+    assert detail.exists()
+    assert read_csv(detail) == []  # header only
+
+  def test_an_empty_dataset_run_adds_a_row_after_a_normal_one(
+    self, run_offline: Callable[..., Any], offline: Path, tmp_path: Path
+  ) -> None:
+    run_offline(10)
+    first = read_csv(offline / "history.csv")[0]
     dataset = tmp_path / "empty.json"
     dataset.write_text("[]", encoding="utf-8")
     notebook = load()
@@ -391,8 +425,60 @@ class TestOfflineRun:
     )
     execute(notebook)
     rows = read_csv(offline / "history.csv")
-    assert len(rows) == 1
-    assert rows[0]["n_questions"] == "0"
+    assert len(rows) == 2
+    assert rows[0] == first  # the old row is intact
+    assert rows[1]["n_questions"] == "0"
+    assert rows[1]["doc_hit_mean"] == ""
+    assert rows[1]["doc_hit_errors"] == "0"
+    assert len(read_jsonl(offline / "history.jsonl")) == 2
+
+  def test_empty_collections_write_nothing_and_do_not_fail(self, offline: Path) -> None:
+    notebook = load()
+    # Offline mode forces the demo collection right after s2-code, so set it after.
+    insert_after(
+      notebook, "s2-code", 'CONFIG["collections"] = []\n', "t-no-collections"
+    )
+    executed = execute(notebook)
+    for cell in executed.cells:
+      if cell.cell_type == "code":
+        assert not any(o.output_type == "error" for o in cell.outputs), cell.get("id")
+    assert "No hay colecciones" in stream_text(executed, "s5-example")
+    assert "No hay colecciones" in stream_text(executed, "s8-code")
+    assert not (offline / "history.csv").exists()
+    assert not (offline / "history.jsonl").exists()
+    assert list(offline.glob("*-detail.csv")) == []
+
+  def test_empty_collections_leave_an_existing_history_untouched(
+    self, run_offline: Callable[..., Any], offline: Path
+  ) -> None:
+    run_offline(10)
+    before = {
+      name: (offline / name).read_bytes() for name in ("history.csv", "history.jsonl")
+    }
+    details = sorted(p.name for p in offline.glob("*-detail.csv"))
+    notebook = load()
+    insert_after(
+      notebook, "s2-code", 'CONFIG["collections"] = []\n', "t-no-collections"
+    )
+    execute(notebook)
+    for name, content in before.items():
+      assert (offline / name).read_bytes() == content, name
+    assert sorted(p.name for p in offline.glob("*-detail.csv")) == details
+
+  def test_empty_collections_and_empty_dataset_together_do_not_fail(
+    self, offline: Path, tmp_path: Path
+  ) -> None:
+    dataset = tmp_path / "empty.json"
+    dataset.write_text("[]", encoding="utf-8")
+    notebook = load()
+    insert_after(
+      notebook,
+      "s2-code",
+      f'CONFIG["dataset"] = {str(dataset)!r}\nCONFIG["collections"] = []\n',
+      "t-both-empty",
+    )
+    execute(notebook)
+    assert not (offline / "history.csv").exists()
 
   def test_a_non_numeric_top_k_fails_loudly(
     self, offline: Path, monkeypatch: pytest.MonkeyPatch
