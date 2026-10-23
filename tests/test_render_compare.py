@@ -29,7 +29,7 @@ from hermes_report.config import Overrides, load_config
 from hermes_report.record import RecordError, RunRecord
 from hermes_report.render import render_compare, render_run, write_compare
 from hermes_report.render.compare import render_compare as render_compare_direct
-from hermes_report.render.score import score_tiles
+from hermes_report.render.score import metric_tiles, score_tiles
 
 HOSTILE = '<script>alert("x")</script><img src=x onerror=alert(1)>&amp;"\''
 PATH_KEYS = (("corpus", "dir"), ("questions", "file"), ("output", "dir"))
@@ -126,11 +126,24 @@ def header_of(html: str) -> list[str]:
   ]
 
 
-def matrix_rows(text: str) -> list[str]:
-  """The raw ``<tr ...>`` HTML of the body rows of the matrix."""
+def all_matrix_rows(text: str) -> list[str]:
+  """The raw ``<tr ...>`` HTML of every body row of the matrix panel.
+
+  That includes the metric score groups, which sit in the same table.
+  """
   panel = re.search(r'id="tab-matriz"[^>]*>(.*?)</section>', text, re.S)
   assert panel
   return re.findall(r"<tr(?: [^>]*)?>(?!<th).*?</tr>", panel.group(1), re.S)
+
+
+def matrix_rows(text: str) -> list[str]:
+  """The raw ``<tr ...>`` HTML of the question rows (``data-q``) of the matrix."""
+  return [r for r in all_matrix_rows(text) if "data-q=" in r.split(">")[0]]
+
+
+def score_group_rows(text: str) -> list[str]:
+  """The rows of the metric score groups: the ones without ``data-q``."""
+  return [r for r in all_matrix_rows(text) if "data-q=" not in r.split(">")[0]]
 
 
 def row_for(text: str, qid: str) -> str:
@@ -501,7 +514,12 @@ def test_the_score_table_matches_the_tiles_of_each_run_report(
   assert rows
   for index, (_, record) in enumerate(runs, 1):
     expected = run_tiles(record)
-    assert {row[0]: row[index] for row in rows} == expected
+    assert expected
+    # the question tiles come first, the metric tiles after them
+    shown = {row[0]: row[index] for row in rows}
+    assert {label: shown[label] for label in expected} == expected
+    assert dict(metric_tiles(record)).items() <= shown.items()
+    assert list(shown) == [*expected, *dict(metric_tiles(record))]
 
 
 def test_score_values_for_the_reference_runs(rec: Callable[[str], RunRecord]) -> None:
@@ -518,7 +536,11 @@ def test_score_uses_the_same_function_as_the_run_report(
 ) -> None:
   runs = build(rec, "a", "c")
   rows = table_rows(card_of(render_compare(runs), "Puntuación"))
-  assert [row[0] for row in rows] == [label for label, _ in score_tiles([])]
+  labels = [row[0] for row in rows]
+  assert labels[: len(score_tiles([]))] == [label for label, _ in score_tiles([])]
+  assert labels[len(score_tiles([])) :] == [
+    label for label, _ in metric_tiles(runs[0][1])
+  ]
 
 
 def test_score_shows_dashes_for_a_run_with_no_questions(
@@ -807,7 +829,12 @@ def test_the_filter_script_and_the_page_markup_agree(
   assert 'getElementById("only-diff")' in script
   assert "tr[data-q]:not(.diff)" in script
   rows = matrix_rows(text)
-  assert rows and all("data-q=" in r.split(">")[0] for r in rows)
+  assert rows
+  # the metric score groups share the table but carry no ``data-q``, so the
+  # filter never hides them
+  assert score_group_rows(text)
+  assert len(all_matrix_rows(text)) == len(rows) + len(score_group_rows(text))
+  assert not any("data-q=" in r.split(">")[0] for r in score_group_rows(text))
   assert not any(
     "data-q=" in r for r in re.findall(r"<tr[^>]*>", card_of(text, "Puntuación"))
   )

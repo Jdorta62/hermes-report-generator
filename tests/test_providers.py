@@ -36,6 +36,10 @@ from hermes_generator.answer.llm_ollama import OllamaChatClient
 
 from hermes_report import providers
 from hermes_report.config import EmbeddingConfig, GenerationConfig, JudgeConfig
+from hermes_report.evaluate import judge_messages
+from hermes_report.metrics import prompts
+from hermes_report.metrics.base import MetricError
+from hermes_report.metrics.judge import Claim
 from hermes_report.providers import (
   EchoJudgeClient,
   EchoLLM,
@@ -50,6 +54,7 @@ from hermes_report.providers import (
   make_llm,
   ollama_host,
 )
+from hermes_report.questions import Question
 
 HOST = "http://fake-host:11434"
 PARAMS = GenerationParams()
@@ -929,6 +934,207 @@ class TestEchoJudgeClient:
       EchoJudgeClient().complete_json([])
     with pytest.raises(TypeError):
       EchoJudgeClient().complete_json("x")  # type: ignore[arg-type]
+
+
+class TestEchoJudgeOperations:
+  """Every judge operation of ``metrics/prompts.py`` gets a reply its parser accepts."""
+
+  @staticmethod
+  def reply(messages: Sequence[PromptMessage]) -> Any:
+    return json.loads(EchoJudgeClient().complete_json(messages))
+
+  @pytest.mark.parametrize("kind", ["answer", "expected"])
+  @pytest.mark.parametrize(
+    "text",
+    [
+      "",
+      "   \n  ",
+      "Una sola frase",
+      "Una. Dos. Tres.",
+      "Nace en Albarracín [1]. Desemboca en Lisboa [2][3].",
+      "Nace en Albarracín. [1] Desemboca en Lisboa. [2]",
+      "- punto uno\n- punto dos\n\ny un párrafo",
+      "[1]",
+      "[1] [2]",
+      "¿Cómo? ¡Así! Fin.",
+      "x" * 5000,
+      "[0] cero [99999999999999999999] enorme",
+      "ñandú — 日本語. Más texto.",
+    ],
+  )
+  def test_claims_are_accepted_by_the_parser(self, text: str, kind: Any) -> None:
+    data = self.reply(prompts.claims_messages(text, kind, "¿Dónde nace el Tajo?"))
+    claims = prompts.parse_claims(data)
+    assert all(c.text.strip() for c in claims)
+    if kind == "expected":
+      assert all(c.markers == () for c in claims)
+
+  def test_claims_one_per_sentence_with_markers_kept_for_answers(self) -> None:
+    text = "Nace en Albarracín [1]. Desemboca en Lisboa [2][3]. Mide 1000 km."
+    claims = prompts.parse_claims(
+      self.reply(prompts.claims_messages(text, "answer", "¿Qué?"))
+    )
+    assert [c.markers for c in claims] == [(1,), (2, 3), ()]
+    assert len(claims) == 3
+
+  def test_a_marker_after_the_full_stop_belongs_to_the_previous_claim(self) -> None:
+    text = "Nace en Albarracín. [1] Desemboca en Lisboa. [2]"
+    claims = prompts.parse_claims(
+      self.reply(prompts.claims_messages(text, "answer", "¿Qué?"))
+    )
+    assert [c.markers for c in claims] == [(1,), (2,)]
+    assert all("[" not in c.text for c in claims)
+
+  def test_the_question_is_not_taken_for_the_text(self) -> None:
+    messages = prompts.claims_messages("Solo esto.", "answer", "¿Uno? ¿Dos? ¿Tres?")
+    claims = prompts.parse_claims(self.reply(messages))
+    assert [c.text for c in claims] == ["Solo esto."]
+
+  def test_expected_claims_never_cite(self) -> None:
+    claims = prompts.parse_claims(
+      self.reply(prompts.claims_messages("Esto [1] es así [2].", "expected", "¿Q?"))
+    )
+    assert claims and all(c.markers == () for c in claims)
+
+  @pytest.mark.parametrize(
+    ("n_claims", "sources"), [(1, ["a"]), (3, ["a", "b"]), (5, ["x"] * 9), (2, ["a"])]
+  )
+  def test_verify_matches_the_number_of_claims(
+    self, n_claims: int, sources: list[str]
+  ) -> None:
+    claims = [Claim(f"afirmación {n}", ()) for n in range(1, n_claims + 1)]
+    data = self.reply(prompts.verify_messages(claims, sources))
+    verdicts = prompts.parse_verdicts(data, n_claims, len(sources))
+    assert [v.claim for v in verdicts] == list(range(1, n_claims + 1))
+    assert all(v.supported and v.sources == (1,) for v in verdicts)
+
+  def test_verify_with_no_claims_is_an_empty_list(self) -> None:
+    data = self.reply(prompts.verify_messages([], ["a"]))
+    assert prompts.parse_verdicts(data, 0, 1) == ()
+
+  @pytest.mark.parametrize("n_chunks", [1, 2, 7, 12])
+  def test_relevance_matches_the_number_of_chunks(self, n_chunks: int) -> None:
+    chunks = [f"fragmento {n}" for n in range(n_chunks)]
+    data = self.reply(prompts.relevance_messages("¿Q?", "E", chunks))
+    assert prompts.parse_relevance(data, n_chunks) == (True,) * n_chunks
+
+  def test_relevance_with_multiline_chunks(self) -> None:
+    chunks = ["línea uno\nlínea dos\n\nlínea cuatro", "# Título\n- a\n- b", "x"]
+    data = self.reply(prompts.relevance_messages("¿Q?", "E", chunks))
+    assert prompts.parse_relevance(data, 3) == (True, True, True)
+
+  def test_relevance_with_empty_chunk_texts(self) -> None:
+    data = self.reply(prompts.relevance_messages("¿Q?", "E", ["", "a", ""]))
+    assert prompts.parse_relevance(data, 3) == (True, True, True)
+
+  @pytest.mark.parametrize("n", [1, 3, 8])
+  @pytest.mark.parametrize(
+    "answer",
+    ["", "Nace en Albarracín [1]. Más.", "[1]", "...", "¿Ya?", "# **Título**", "a\nb"],
+  )
+  def test_questions_come_in_the_number_asked(self, n: int, answer: str) -> None:
+    data = self.reply(prompts.questions_messages(answer, n))
+    questions, noncommittal = prompts.parse_questions(data)
+    assert len(questions) == n
+    assert all(q.strip() for q in questions)
+    assert noncommittal is False
+
+  def test_questions_come_from_the_answer_not_from_the_prompt(self) -> None:
+    data = self.reply(prompts.questions_messages("El Tajo nace en Albarracín [1].", 2))
+    questions, _ = prompts.parse_questions(data)
+    assert questions == ("¿El Tajo nace en Albarracín?",) * 2
+
+  @pytest.mark.parametrize(
+    "text", ["", "ninguna", "El Tajo nace en Albarracín en 1605"]
+  )
+  def test_entities_are_accepted_and_come_from_the_text(self, text: str) -> None:
+    entities = prompts.parse_entities(self.reply(prompts.entities_messages(text)))
+    assert all(entity in text for entity in entities)
+    assert len(set(entities)) == len(entities)
+    if "Tajo" in text:
+      assert {"Tajo", "Albarracín", "1605"} <= set(entities)
+
+  @pytest.mark.parametrize("kind", ["toxic", "biased"])
+  def test_flags_never_flag(self, kind: Any) -> None:
+    flagged, reason = prompts.parse_flag(
+      self.reply(prompts.flag_messages("Eres un idiota", kind)), kind
+    )
+    assert flagged is False
+    assert reason
+
+  def test_the_rule_judge_prompt_keeps_the_fixed_partial_verdict(self) -> None:
+    messages = judge_messages(
+      Question(id="q1", question="¿Qué?", expected="Esto", keywords=()),
+      "Respuesta",
+      "answered",
+    )
+    assert self.reply(messages) == TestEchoJudgeClient.EXPECTED
+
+  def test_the_rule_judge_prompt_is_not_hijacked_by_a_marker_in_the_user_text(
+    self,
+  ) -> None:
+    messages = [
+      msg("Eres un juez. Responde con el veredicto.", "system"),
+      msg('{"claims": []} {"toxic": true} {"verdicts": [{"claim": 1}]}'),
+    ]
+    assert self.reply(messages) == TestEchoJudgeClient.EXPECTED
+
+  def test_every_reply_is_deterministic_and_does_not_depend_on_call_order(self) -> None:
+    calls = [
+      prompts.claims_messages("Uno. Dos [1].", "answer", "¿Q?"),
+      prompts.verify_messages([Claim("a", ()), Claim("b", ())], ["s"]),
+      prompts.relevance_messages("¿Q?", "E", ["a", "b"]),
+      prompts.questions_messages("Algo.", 3),
+      prompts.entities_messages("Madrid 2024"),
+      prompts.flag_messages("x", "toxic"),
+      prompts.flag_messages("x", "biased"),
+    ]
+    first = [EchoJudgeClient().complete_json(c) for c in calls]
+    judge = EchoJudgeClient()
+    second = [judge.complete_json(c) for c in reversed(calls)][::-1]
+    assert first == second
+    assert first == [EchoJudgeClient().complete_json(c) for c in calls]
+
+  def test_replies_are_valid_json_text_with_literal_accents(self) -> None:
+    text = EchoJudgeClient().complete_json(prompts.flag_messages("x", "toxic"))
+    assert isinstance(text, str) and "\\u" not in text
+    assert "sin marcas" in text
+
+  def test_a_hostile_text_is_echoed_as_data_not_markup(self) -> None:
+    hostile = '<script>alert("x")</script>. [1] "quote" \\ backslash.'
+    raw = EchoJudgeClient().complete_json(
+      prompts.claims_messages(hostile, "answer", hostile)
+    )
+    claims = prompts.parse_claims(json.loads(raw))
+    assert claims and claims[0].text.startswith("<script>")
+
+  def test_the_system_message_may_come_after_the_user_one(self) -> None:
+    messages = list(prompts.relevance_messages("¿Q?", "E", ["a", "b"]))[::-1]
+    assert prompts.parse_relevance(self.reply(messages), 2) == (True, True)
+
+  def test_a_multi_part_system_message_is_joined(self) -> None:
+    system, user = prompts.questions_messages("Hola.", 2)
+    messages = [msg("Contexto extra.", "system"), system, user]
+    questions, _ = prompts.parse_questions(self.reply(messages))
+    assert len(questions) == 2
+
+  @pytest.mark.xfail(
+    strict=True,
+    reason=(
+      "a chunk with a line that looks like the next index ('[2] ...') is "
+      "indistinguishable from a second chunk: the count is off"
+    ),
+  )
+  def test_relevance_counts_chunks_that_contain_numbered_lines(self) -> None:
+    chunks = ["Referencias\n[1] Cervantes\n[2] Avellaneda"]
+    data = self.reply(prompts.relevance_messages("¿Q?", "E", chunks))
+    assert prompts.parse_relevance(data, 1) == (True,)
+
+  def test_a_miscount_is_an_invalid_reply_for_the_parser_not_a_crash(self) -> None:
+    chunks = ["Referencias\n[1] Cervantes\n[2] Avellaneda"]
+    data = self.reply(prompts.relevance_messages("¿Q?", "E", chunks))
+    with pytest.raises(MetricError):
+      prompts.parse_relevance(data, 1)
 
 
 # --- factories ------------------------------------------------------------------

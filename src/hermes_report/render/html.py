@@ -6,7 +6,7 @@ import contextlib
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from html import escape
 from importlib import resources
 from pathlib import Path
@@ -18,6 +18,8 @@ from hermes_report.record import RecordError
 __all__ = [
   "GENERATION_LABELS",
   "JUDGE_LABELS",
+  "LOWER_IS_BETTER",
+  "METRIC_LABELS",
   "NO_DATA",
   "RULE_LABELS",
   "RULE_TONES",
@@ -31,6 +33,8 @@ __all__ = [
   "page",
   "grid",
   "link",
+  "messages_block",
+  "metric_label",
   "section",
   "seconds",
   "status_pill",
@@ -76,6 +80,58 @@ GENERATION_LABELS: Final = {
   "no_context": "sin contexto",
   "error": "error",
 }
+
+# Spanish label of every score of every metric family of the registry.
+METRIC_LABELS: Final = {
+  "doc_hit": "Documento esperado recuperado",
+  "doc_recall": "Cobertura de documentos esperados",
+  "doc_mrr": "MRR de documentos",
+  "evidence_hit": "Evidencia completa recuperada",
+  "evidence_recall": "Cobertura de la evidencia recuperada",
+  "evidence_mrr": "MRR de la evidencia",
+  "evidence_recall_context": "Cobertura de la evidencia en el contexto",
+  "budget_loss": "Pérdida por presupuesto",
+  "false_refusal": "Rechazos injustificados",
+  "invented_answer": "Respuestas inventadas",
+  "seconds_retrieval": "Segundos de recuperación",
+  "seconds_enrich": "Segundos de enriquecimiento",
+  "seconds_generation": "Segundos de generación",
+  "context_tokens": "Tokens del contexto",
+  "prompt_tokens": "Tokens del prompt",
+  "reply_tokens": "Tokens de la respuesta",
+  "faithfulness": "Fidelidad",
+  "answer_relevance": "Relevancia de la respuesta",
+  "context_precision": "Precisión del contexto",
+  "context_recall": "Cobertura del contexto",
+  "correctness_precision": "Corrección: precisión",
+  "correctness_recall": "Corrección: cobertura",
+  "correctness_f1": "Corrección: F1",
+  "citation_precision": "Precisión de las citas",
+  "citation_recall": "Cobertura de las citas",
+  "bleu": "BLEU",
+  "rouge_l": "ROUGE-L",
+  "noise_sensitivity": "Sensibilidad al ruido",
+  "context_entity_recall": "Cobertura de entidades en el contexto",
+  "toxicity": "Toxicidad",
+  "bias": "Sesgo",
+}
+# The scores where a lower value is better (the rest: higher is better).
+LOWER_IS_BETTER: Final[frozenset[str]] = frozenset(
+  {
+    "budget_loss",
+    "false_refusal",
+    "invented_answer",
+    "seconds_retrieval",
+    "seconds_enrich",
+    "seconds_generation",
+    "context_tokens",
+    "prompt_tokens",
+    "reply_tokens",
+    "noise_sensitivity",
+    "toxicity",
+    "bias",
+  }
+)
 
 NO_DATA: Final = '<span class="muted">—</span>'
 
@@ -228,6 +284,26 @@ def deep_link(
 def link(href: str, inner: str, css: str = "chunk-link") -> str:
   """An anchor to ``href`` (plain text, escaped) around ``inner`` (HTML)."""
   return f'<a class="{esc(css)}" href="{esc(href)}">{inner}</a>'
+
+
+def messages_block(messages: Sequence[Mapping[str, Any]]) -> str:
+  """Chat messages as role-tagged text blocks; a note when there are none."""
+  if not messages:
+    return '<p class="muted">Sin mensajes.</p>'
+  return "".join(
+    f'<div class="msg {esc(m["role"])}"><div class="role">{esc(m["role"])}</div>'
+    f'<pre class="text">{esc(m["content"])}</pre></div>'
+    for m in messages
+  )
+
+
+def metric_label(score: str) -> str:
+  """The Spanish label of ``score``, with `` ↓`` when a lower value is better.
+
+  A score without a label keeps its own name.
+  """
+  label = METRIC_LABELS.get(score, score)
+  return f"{label} ↓" if score in LOWER_IS_BETTER else label
 
 
 def seconds(value: float) -> str:
