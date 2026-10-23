@@ -323,7 +323,7 @@ def test_run_json_reads_back_equal_to_the_outcome(config: RunConfig) -> None:
 
 def test_record_header(config: RunConfig) -> None:
   record = run(config, progress=lambda line: None).record
-  assert record["schema"] == 1
+  assert record["schema"] == 2
   assert record["title"] == "Don Quijote"
   assert record["description"] == "Batería de prueba"
   assert record["seconds"] > 0
@@ -743,8 +743,10 @@ class CountingJudge:
 
 
 def test_failing_questions_are_counted_and_do_not_stop_the_run(
-  config: RunConfig, monkeypatch: pytest.MonkeyPatch
+  make_config: Callable[..., RunConfig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+  # Metrics off: the counting judge counts only the verdict calls.
+  config = make_config(no_metrics=True)
   judge = CountingJudge()
   monkeypatch.setattr(runner, "make_llm", lambda cfg: FlakyLLM(("rocín", "Quijote")))
   monkeypatch.setattr(runner, "make_judge", lambda cfg: judge)
@@ -768,8 +770,9 @@ def test_failing_questions_are_counted_and_do_not_stop_the_run(
 
 
 def test_every_question_failing_counts_them_all(
-  config: RunConfig, monkeypatch: pytest.MonkeyPatch
+  make_config: Callable[..., RunConfig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+  config = make_config(no_metrics=True)
   judge = CountingJudge()
   monkeypatch.setattr(runner, "make_llm", lambda cfg: FlakyLLM(("",)))
   monkeypatch.setattr(runner, "make_judge", lambda cfg: judge)

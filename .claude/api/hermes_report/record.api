@@ -2,7 +2,8 @@
 @mod hermes_report.record :: Run record: the schema of ``run.json``, its converters and its file I/O
 @ext hermes_core, hermes_enrich
 
-k SCHEMA_VERSION: Final = 1
+k SCHEMA_VERSION: Final = 2
+k READABLE_SCHEMAS: Final = (1, 2)
 
 C RecordError(Exception) :: The run record cannot be read or written (message in Spanish)
   m __init__(path: Path, message: str)
@@ -94,16 +95,23 @@ C MetricResultRecord(TypedDict) :: The outcome of one metric family for one ques
   a name: str; status: str; scores: dict[str, float | None]; details: dict[str, Any]
   a calls: list[JudgeCallRecord]; error: str | None; seconds: float
 
+C ScoreSummaryRecord(TypedDict) :: The aggregate of one score over a run
+  a mean: float | None; n: int; not_applicable: int; skipped: int
+  a errors: int
+
+C MetricsRunRecord(TypedDict) :: The metrics of a run: what was selected and the mean of every score
+  a selection: list[str]; scores: list[str]; summary: dict[str, ScoreSummaryRecord]
+
 C QuestionRecord(TypedDict) :: Everything that happened to one question
   a spec: dict[str, Any]; query_id: str; seconds: float; error: str | None
   a retrieval: RetrievalRecord | None; enrich: EnrichRecord | None; generation: GenerationRecord | None; rules: RuleRecord | None
-  a judge: JudgeRecord | None
+  a judge: JudgeRecord | None; metrics: list[MetricResultRecord] | None
 
 C RunRecord(TypedDict) :: The whole run: the content of ``run.json``
   a schema: int; title: str; description: str; started_at: str
   a finished_at: str; seconds: float; config: dict[str, Any]; environment: EnvironmentRecord
   a corpus: CorpusRecord; ingest: IngestRecord; collection: CollectionRecord; points: list[PointRecord]
-  a questions: list[QuestionRecord]
+  a questions: list[QuestionRecord]; metrics: MetricsRunRecord | None
 
 f json_safe(value: Any) -> Any :: Copy of ``value`` with every tuple turned into a list, recursively
 f vector_summary(vector: Sequence[float]) -> VectorSummary :: Summarise a vector as its dimension, Euclidean norm and first 8 values

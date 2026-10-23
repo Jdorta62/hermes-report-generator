@@ -19,6 +19,7 @@ __all__ = [
   "GenerationConfig",
   "IngestConfig",
   "JudgeConfig",
+  "MetricsConfig",
   "OutputConfig",
   "Overrides",
   "QdrantConfig",
@@ -147,6 +148,21 @@ class JudgeConfig:
 
 
 @dataclass(frozen=True)
+class MetricsConfig:
+  """The ``[metrics]`` section: which metric families run.
+
+  Attributes:
+    enabled: ``False`` computes no metric.
+    include: Families that run although they are off by default.
+    exclude: Families that do not run.
+  """
+
+  enabled: bool = True
+  include: tuple[str, ...] = ()
+  exclude: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OutputConfig:
   """The ``[output]`` section, with absolute paths."""
 
@@ -162,7 +178,8 @@ class Overrides:
   also ``Path("")``, means the current directory; the command line rejects an
   empty ``--out`` before building the path). ``only`` must be a tuple or list
   of non-empty strings, not a bare string; ``load_config`` raises
-  ``ConfigError`` otherwise.
+  ``ConfigError`` otherwise. ``metrics`` names metric families that are added to
+  ``[metrics] include``; ``no_metrics`` turns every metric off.
   """
 
   model: str | None = None
@@ -173,6 +190,8 @@ class Overrides:
   out: Path | None = None
   only: tuple[str, ...] = ()
   reingest: bool = False
+  no_metrics: bool = False
+  metrics: tuple[str, ...] = ()
 
 
 def _plain(value: object) -> object:
@@ -205,6 +224,7 @@ class RunConfig:
     description: Free text, may be empty.
     only: Question ids to run; empty means all.
     reingest: Whether to ignore the ingestion cache.
+    metrics: Which metric families run.
   """
 
   path: Path = field(compare=False)
@@ -222,6 +242,7 @@ class RunConfig:
   description: str = ""
   only: tuple[str, ...] = ()
   reingest: bool = False
+  metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
   def to_dict(self) -> dict[str, Any]:
     """The resolved run file as plain data, in the TOML layout.
@@ -242,6 +263,7 @@ class RunConfig:
       "generation": _section_dict(self.generation),
       "judge": _section_dict(self.judge),
       "output": _section_dict(self.output),
+      "metrics": _section_dict(self.metrics),
     }
 
   def to_toml(self) -> str:
@@ -508,6 +530,23 @@ def _as_only(path: Path, key: str, value: object) -> tuple[str, ...]:
   )
 
 
+def _as_metric_names(path: Path, key: str, value: object) -> tuple[str, ...]:
+  """A list of metric family names, each one in the registry."""
+  from hermes_report.metrics.selection import METRICS
+
+  if not isinstance(value, tuple | list):
+    raise ConfigError(path, "debe ser una lista de textos", key)
+  names = tuple(
+    _as_str(path, f"{key}[{i}]", item, non_empty=True) for i, item in enumerate(value)
+  )
+  for name in names:
+    if name not in METRICS:
+      raise ConfigError(
+        path, f"métrica desconocida {name!r}; opciones: {', '.join(METRICS)}", key
+      )
+  return names
+
+
 _TOP_LEVEL = (
   "title",
   "description",
@@ -521,6 +560,7 @@ _TOP_LEVEL = (
   "generation",
   "judge",
   "output",
+  "metrics",
 )
 
 
@@ -705,6 +745,13 @@ def load_config(path: Path, overrides: Overrides | None = None) -> RunConfig:
     ),
   )
 
+  t = _table(path, data, "metrics", ("enabled", "include", "exclude"))
+  metrics = MetricsConfig(
+    enabled=_get(path, t, "metrics", "enabled", _as_bool, True),
+    include=_get(path, t, "metrics", "include", _as_metric_names, ()),
+    exclude=_get(path, t, "metrics", "exclude", _as_metric_names, ()),
+  )
+
   only: tuple[str, ...] = ()
   reingest = False
   if overrides is not None:
@@ -735,6 +782,10 @@ def load_config(path: Path, overrides: Overrides | None = None) -> RunConfig:
       output = replace(output, dir=_resolve(path, "output.dir", Path(), text))
     only = _override(path, "only", _as_only, overrides.only)
     reingest = overrides.reingest
+    if overrides.no_metrics:
+      metrics = replace(metrics, enabled=False)
+    extra = _override(path, "metrics.include", _as_metric_names, overrides.metrics)
+    metrics = replace(metrics, include=tuple(dict.fromkeys((*metrics.include, *extra))))
 
   return RunConfig(
     path=path,
@@ -752,4 +803,5 @@ def load_config(path: Path, overrides: Overrides | None = None) -> RunConfig:
     output=output,
     only=only,
     reingest=reingest,
+    metrics=metrics,
   )

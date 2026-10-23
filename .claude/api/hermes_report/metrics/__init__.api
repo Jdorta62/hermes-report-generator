@@ -14,4 +14,5 @@
 @reexport ScoreSummary -> hermes_report.metrics.runner
 @reexport aggregate -> hermes_report.metrics.runner
 @reexport evaluate_metrics -> hermes_report.metrics.runner
-@deps hermes_report.metrics.base, hermes_report.metrics.judge, hermes_report.metrics.runner, hermes_report.metrics.selection
+@reexport metric_input -> hermes_report.metrics.adapter
+@deps hermes_report.metrics.adapter, hermes_report.metrics.base, hermes_report.metrics.judge, hermes_report.metrics.runner, hermes_report.metrics.selection

@@ -1,5 +1,6 @@
 """RAG metrics over a neutral input: retrieval, evidence, refusal, cost and judged."""
 
+from hermes_report.metrics.adapter import metric_input
 from hermes_report.metrics.base import (
   Citation,
   Metric,
@@ -27,4 +28,5 @@ __all__ = [
   "ScoreSummary",
   "aggregate",
   "evaluate_metrics",
+  "metric_input",
 ]

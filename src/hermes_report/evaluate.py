@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Mapping
 from typing import Any, Final
 
 from hermes_core.generation import PromptMessage
@@ -22,6 +23,7 @@ from hermes_report.record import (
 __all__ = [
   "JUDGE_VERDICTS",
   "RULE_VERDICTS",
+  "is_refused",
   "judge",
   "judge_messages",
   "rule_verdict",
@@ -79,6 +81,14 @@ def _result_of(record: QuestionRecord) -> dict[str, Any] | None:
   return generation["result"] if generation else None
 
 
+def is_refused(result: Mapping[str, Any]) -> bool:
+  """Whether a generation result is the insufficient-sources reply.
+
+  The rules use this same test for ``generation_refused``.
+  """
+  return bool(result["status"] in _REFUSED_STATUSES)
+
+
 def rule_verdict(question: Question, record: QuestionRecord) -> RuleRecord:
   """Grade one answer by rules, from the record alone.
 
@@ -109,7 +119,7 @@ def rule_verdict(question: Question, record: QuestionRecord) -> RuleRecord:
   docs: bool | None = None
   if question.documents:
     docs = any(c["metadata"].get("source") in question.documents for c in chunks)
-  refused = result["status"] in _REFUSED_STATUSES
+  refused = is_refused(result)
   answer_ok: bool | None
   verdict: str
   if question.refusal:
