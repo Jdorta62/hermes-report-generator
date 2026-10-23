@@ -18,7 +18,12 @@ from hermes_report.corpus import Corpus, load_corpus
 from hermes_report.evaluate import judge, judge_messages, rule_verdict
 from hermes_report.ingest import Ingestion, ingest_corpus
 from hermes_report.metrics.adapter import metric_input
-from hermes_report.metrics.base import Metric, MetricResult, MetricServices
+from hermes_report.metrics.base import (
+  Metric,
+  MetricResult,
+  MetricServices,
+  describe,
+)
 from hermes_report.metrics.judge import JudgeSession
 from hermes_report.metrics.runner import ScoreSummary, aggregate, evaluate_metrics
 from hermes_report.metrics.selection import MetricSelection
@@ -130,9 +135,13 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
   question_set = load_questions(config.questions.file, corpus.sources)
   questions = _select(question_set.questions, config.only)
   selection = config.metrics
-  selected = MetricSelection(
-    selection.enabled, selection.include, selection.exclude
-  ).resolve()
+  selected: tuple[Metric, ...] = ()
+  try:
+    selected = MetricSelection(
+      selection.enabled, selection.include, selection.exclude
+    ).resolve()
+  except Exception as exc:
+    progress(f"· AVISO: no se pudo resolver la selección de métricas ({describe(exc)})")
 
   models = _ollama_models(config)
   if models:
@@ -178,7 +187,7 @@ def run(config: RunConfig, progress: Callable[[str], None] = print) -> RunOutcom
   finished = datetime.now().astimezone()
   metrics_record: MetricsRunRecord | None = None
   if selection.enabled:
-    metrics_record = _metrics_record(selected, results)
+    metrics_record = _metrics_record(selected, results, progress)
   record: RunRecord = {
     "schema": SCHEMA_VERSION,
     "title": config.title,
@@ -254,14 +263,22 @@ def _answer(
     record["judge"] = _grade(question, record, generation["result"], judge_client)
   results: tuple[MetricResult, ...] = ()
   if ctx.config.metrics.enabled:
-    item = metric_input(question, record)
-    services = MetricServices(
-      judge=None if judge_client is None else JudgeSession(judge_client, item),
-      embedder=embedder,
-      counter=ctx.token_counter,
-    )
-    results = evaluate_metrics(item, selected, services)
-    record["metrics"] = [result.to_record() for result in results]
+    # Metrics never change the run: a failure leaves this question without them.
+    try:
+      item = metric_input(question, record)
+      services = MetricServices(
+        judge=None if judge_client is None else JudgeSession(judge_client, item),
+        embedder=embedder,
+        counter=ctx.token_counter,
+      )
+      results = evaluate_metrics(item, selected, services)
+      record["metrics"] = [result.to_record() for result in results]
+    except Exception as exc:
+      results = ()
+      record["metrics"] = None
+      progress(
+        f"· AVISO {question.id}: las métricas fallaron y se omiten ({describe(exc)})"
+      )
   judged = record["judge"]
   verdict = (judged["verdict"] if judged else None) or _NO_VERDICT
   rules = record["rules"]
@@ -285,14 +302,24 @@ def _score_record(item: ScoreSummary) -> ScoreSummaryRecord:
 
 
 def _metrics_record(
-  selected: tuple[Metric, ...], results: list[tuple[MetricResult, ...]]
+  selected: tuple[Metric, ...],
+  results: list[tuple[MetricResult, ...]],
+  progress: Callable[[str], None],
 ) -> MetricsRunRecord:
-  """The metrics of the run: the selection and the aggregate of every score."""
-  summary = aggregate(results, selected)
+  """The metrics of the run: the selection and the aggregate of every score.
+
+  A failing aggregate leaves the summary empty and is reported to ``progress``.
+  """
+  try:
+    summary = aggregate(results, selected)
+    records = {score: _score_record(item) for score, item in summary.items()}
+  except Exception as exc:
+    progress(f"· AVISO: no se pudo agregar las métricas ({describe(exc)})")
+    records = {}
   return {
     "selection": [metric.name for metric in selected],
     "scores": [score for metric in selected for score in metric.scores],
-    "summary": {score: _score_record(item) for score, item in summary.items()},
+    "summary": records,
   }
 
 

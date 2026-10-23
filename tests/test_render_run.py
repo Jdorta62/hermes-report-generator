@@ -30,6 +30,7 @@ from hermes_report.record import RecordError, RunRecord
 from hermes_report.render import html as h
 from hermes_report.render import render_run, write_report
 from hermes_report.render.run import render_run as render_run_direct
+from hermes_report.render.score import primary_scores
 
 HOSTILE = '<script>alert("x")</script><img src=x onerror=alert(1)>&amp;"\''
 
@@ -347,7 +348,9 @@ def test_tile_values_of_the_reference_run(report: str, real_record: RunRecord) -
   assert values["Tiempo medio por pregunta"] == f"{mean:.1f} s"
 
 
-def test_summary_table_one_row_per_question_linking_to_its_tab(report: str) -> None:
+def test_summary_table_one_row_per_question_linking_to_its_tab(
+  report: str, real_record: RunRecord
+) -> None:
   panel = panel_of(report, "resumen")
   rows = rows_of(panel)
   assert len(rows) == 3
@@ -363,7 +366,11 @@ def test_summary_table_one_row_per_question_linking_to_its_tab(report: str) -> N
     "discrepan",
     "1.ª evidencia",
     "tiempo",
+    *[h.metric_label(score) for score in primary_scores(real_record)],
   ]
+  # one primary score per default-on family, and every row has a cell for each
+  assert len(primary_scores(real_record)) == len(real_record["metrics"]["selection"])  # type: ignore[index]
+  assert all(row.count("<td") == len(headers) for row in rows)
 
 
 def test_summary_row_shows_pills_rank_and_seconds(
@@ -734,6 +741,7 @@ def test_errored_question_shows_its_error_and_survives_missing_phases(
   item["generation"] = None
   item["rules"] = None
   item["judge"] = None
+  item["metrics"] = None
   text = render_run(record)
   panel = panel_of(text, "q-q01")
   assert '<div class="error">RuntimeError: model down</div>' in panel
@@ -1522,6 +1530,7 @@ def test_real_run_has_every_section_in_pipeline_order(report: str) -> None:
     "llm",
     "out",
     "judge",
+    "metrics",
   ]
 
 
@@ -1555,6 +1564,7 @@ def test_flow_chips_carry_the_step_names_and_summaries(report: str) -> None:
     "LLM",
     "Resultado",
     "Juez",
+    "Métricas",
   ]
 
 
@@ -1574,6 +1584,7 @@ def test_section_step_marks_and_titles(report: str) -> None:
     ("L", "LLM"),
     ("R", "GenerationResult"),
     ("J", "Juez"),
+    ("M", "Métricas"),
   ]
 
 
@@ -1761,7 +1772,7 @@ def test_empty_retrieval_has_input_and_empty_seed_and_no_enrichment_sections(
   empty_record: RunRecord,
 ) -> None:
   panel = panel_of(render_run(empty_record), "q-q01")
-  assert phase_ids(panel) == ["in", "seed", "llm", "out", "judge"]
+  assert phase_ids(panel) == ["in", "seed", "llm", "out", "judge", "metrics"]
   assert "Lista vacía." in phase(panel, "in")
   seed = phase(panel, "seed")
   assert "Sin chunks no hay semilla" in seed
@@ -2385,6 +2396,7 @@ def failed_at(record: RunRecord, where: str) -> RunRecord:
   item["error"] = f"{where}: se cayó"
   item["rules"] = None
   item["judge"] = None
+  item["metrics"] = None
   if where == "retrieval":
     item["retrieval"] = item["enrich"] = item["generation"] = None
   elif where == "enrich":

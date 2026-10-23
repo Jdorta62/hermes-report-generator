@@ -29,6 +29,7 @@
 @mod hermes_report.render :: Rendering of a run record as the self-contained ``report.html`` -> hermes_report/render/__init__.api
 @mod hermes_report.render.compare :: The ``compare.html`` of several runs: a pure function of their run records -> hermes_report/render/compare.api
 @mod hermes_report.render.html :: HTML helpers shared by every renderer of the report, and the page itself -> hermes_report/render/html.api
+@mod hermes_report.render.metrics :: The "Métricas" section of a question tab: scores, details and judge calls -> hermes_report/render/metrics.api
 @mod hermes_report.render.question :: One question tab of the report: its evaluation, document map and every phase -> hermes_report/render/question.api
 @mod hermes_report.render.run :: The ``report.html`` of a run: a pure function of the run record -> hermes_report/render/run.api
 @mod hermes_report.render.score :: Question ids and the score tiles that the run report and the comparison share -> hermes_report/render/score.api

@@ -22,6 +22,7 @@ from hermes_report.render.html import (
   grid,
   json_block,
   json_script,
+  metric_label,
   page,
   seconds,
   status_pill,
@@ -35,8 +36,13 @@ from hermes_report.render.question import (
   disagree,
   question_panel,
 )
+from hermes_report.render.score import (
+  metric_tiles,
+  primary_scores,
+  score_cell,
+  score_tiles,
+)
 from hermes_report.render.score import question_id as id_of_question
-from hermes_report.render.score import score_tiles
 
 __all__ = ["render_run", "write_report"]
 
@@ -170,8 +176,9 @@ def _summary_panel(record: RunRecord, ids: Sequence[str]) -> str:
     f'<span class="big">{esc(value)}</span></div>'
     for label, value in tiles
   )
+  scores = primary_scores(record)
   rows = [
-    _summary_row(item, question_id)
+    _summary_row(item, question_id, scores)
     for question_id, item in zip(ids, questions, strict=True)
   ]
   results = table(
@@ -183,6 +190,7 @@ def _summary_panel(record: RunRecord, ids: Sequence[str]) -> str:
       ("discrepan", False),
       ("1.ª evidencia", False),
       ("tiempo", False),
+      *((metric_label(score), True) for score in scores),
     ],
     rows,
   )
@@ -198,13 +206,34 @@ def _summary_panel(record: RunRecord, ids: Sequence[str]) -> str:
   return (
     _head(record["title"], record["description"])
     + f'<div class="tiles">{tile_html}</div>'
+    + _metric_tiles(record)
     + card("Resultados", results if rows else '<p class="muted">Sin preguntas.</p>')
     + card("Archivo de ejecución resuelto", json_block(record["config"]))
     + card("Entorno", setup)
   )
 
 
-def _summary_row(item: QuestionRecord, question_id: str) -> str:
+def _metric_tiles(record: RunRecord) -> str:
+  """The tiles of the metric means, with a note for the lower-is-better ones."""
+  tiles = metric_tiles(record)
+  if not tiles:
+    return ""
+  tile_html = "".join(
+    f'<div class="tile"><span class="k">{esc(label)}</span>'
+    f'<span class="big small">{esc(value)}</span></div>'
+    for label, value in tiles
+  )
+  lower = any(label.endswith("↓") for label, _ in tiles)
+  note = (
+    '<p class="muted">↓ menor es mejor. Media sobre las preguntas donde la métrica '
+    "tiene valor (n).</p>"
+    if lower
+    else '<p class="muted">Media sobre las preguntas donde la métrica tiene valor (n).</p>'
+  )
+  return f'<div class="tiles">{tile_html}</div>{note}'
+
+
+def _summary_row(item: QuestionRecord, question_id: str, scores: Sequence[str]) -> str:
   key = f"q-{question_id}"
   rules = item["rules"]
   judge = item["judge"]
@@ -217,7 +246,11 @@ def _summary_row(item: QuestionRecord, question_id: str) -> str:
     f"<td>{status_pill(judge['verdict'] if judge else None, 'judge')}</td>"
     f"<td>{_MARK if disagree(item) else ''}</td>"
     f"<td>{f'#{rank}' if rank else NO_DATA}</td>"
-    f"<td>{esc(seconds(item['seconds']))}</td></tr>"
+    f"<td>{esc(seconds(item['seconds']))}</td>"
+    + "".join(
+      f'<td class="num-cell">{score_cell(item, score)}</td>' for score in scores
+    )
+    + "</tr>"
   )
 
 

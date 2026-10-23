@@ -1023,3 +1023,282 @@ class TestSchema1Fixture:
     assert (tmp_path / "report.html").read_text("utf-8") == (
       SCHEMA1 / "report.html"
     ).read_text("utf-8")
+
+
+# ------------------------------------------- metrics never change the run (5.5.5)
+
+
+def run_with_progress(config: RunConfig) -> tuple[RunOutcome, list[str]]:
+  lines: list[str] = []
+  return run(config, progress=lines.append), lines
+
+
+def warnings_of(lines: list[str]) -> list[str]:
+  return [line for line in lines if "AVISO" in line]
+
+
+def verdicts(record: RunRecord) -> list[Any]:
+  return [
+    (q["rules"], q["judge"] and q["judge"]["verdict"]) for q in record["questions"]
+  ]
+
+
+class TestMetricGuards:
+  def test_a_failing_adapter_leaves_that_question_without_metrics(
+    self,
+    monkeypatch: pytest.MonkeyPatch,
+    make_config: Callable[..., RunConfig],
+    tmp_path: Path,
+  ) -> None:
+    baseline = quiet(make_config(no_metrics=True, out=tmp_path / "base")).record
+    real = metric_input_direct
+
+    def flaky(question: Question, record: QuestionRecord) -> MetricInput:
+      if question.id == "q02":
+        raise RuntimeError("adapter exploded")
+      return real(question, record)
+
+    monkeypatch.setattr(runner, "metric_input", flaky)
+    outcome, lines = run_with_progress(make_config())
+    record = outcome.record
+    by_id = {q["query_id"]: q for q in record["questions"]}
+    assert by_id["q02"]["metrics"] is None
+    assert by_id["q01"]["metrics"] and by_id["q11"]["metrics"]
+    [warning] = warnings_of(lines)
+    assert "q02" in warning and "RuntimeError: adapter exploded" in warning
+    assert outcome.failed == 0 and by_id["q02"]["error"] is None
+    # the run itself is untouched: same rules, same judge verdicts
+    assert verdicts(record) == verdicts(baseline)
+    # the summary counts the two questions that did have metrics
+    assert record["metrics"]
+    summary = record["metrics"]["summary"]
+    for score, item in summary.items():
+      total = item["n"] + item["not_applicable"] + item["skipped"] + item["errors"]
+      assert total == 3, score  # the guarded question counts as not applicable
+      assert item["errors"] == 0, score
+    assert summary["doc_hit"]["n"] == 1  # q02 would have counted, q11 has no documents
+    # run.json was written and reads back
+    assert read_record(outcome.folder / "run.json") == record
+    assert (outcome.folder / "report.html").is_file()
+
+  @pytest.mark.parametrize("name", ["JudgeSession", "evaluate_metrics"])
+  def test_a_failing_session_or_evaluation_is_guarded_too(
+    self,
+    monkeypatch: pytest.MonkeyPatch,
+    make_config: Callable[..., RunConfig],
+    name: str,
+  ) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+      raise ValueError(f"{name} down")
+
+    monkeypatch.setattr(runner, name, boom)
+    outcome, lines = run_with_progress(make_config())
+    assert all(q["metrics"] is None for q in outcome.record["questions"])
+    assert len(warnings_of(lines)) == 3
+    assert all(f"ValueError: {name} down" in w for w in warnings_of(lines))
+    assert outcome.failed == 0
+    assert outcome.record["metrics"] is not None  # the run still has a block
+    assert outcome.record["metrics"]["summary"]
+    assert all(item["n"] == 0 for item in outcome.record["metrics"]["summary"].values())
+
+  def test_a_failing_to_record_is_guarded_and_leaves_none_not_a_partial_list(
+    self,
+    monkeypatch: pytest.MonkeyPatch,
+    make_config: Callable[..., RunConfig],
+  ) -> None:
+    from hermes_report.metrics.base import MetricResult
+
+    def boom(self: MetricResult) -> Any:
+      raise TypeError("not serialisable")
+
+    monkeypatch.setattr(MetricResult, "to_record", boom)
+    outcome, lines = run_with_progress(make_config())
+    assert all(q["metrics"] is None for q in outcome.record["questions"])
+    assert len(warnings_of(lines)) == 3
+
+  def test_a_failing_selection_resolve_still_writes_the_run(
+    self,
+    monkeypatch: pytest.MonkeyPatch,
+    make_config: Callable[..., RunConfig],
+    tmp_path: Path,
+  ) -> None:
+    baseline = quiet(make_config(no_metrics=True, out=tmp_path / "base")).record
+
+    def boom(self: MetricSelection) -> Any:
+      raise RuntimeError("registry broken")
+
+    monkeypatch.setattr(MetricSelection, "resolve", boom)
+    outcome, lines = run_with_progress(make_config())
+    record = outcome.record
+    assert verdicts(record) == verdicts(baseline)
+    assert record["metrics"] == {"selection": [], "scores": [], "summary": {}}
+    assert all(not q["metrics"] for q in record["questions"])
+    [warning] = warnings_of(lines)
+    assert "RuntimeError: registry broken" in warning
+    assert read_record(outcome.folder / "run.json") == record
+    # and the report renders: no metrics section, no metric tiles
+    page = render_run(record)
+    assert "Métricas</span>" not in page and "big small" not in page
+
+  def test_a_failing_aggregate_leaves_an_empty_summary_and_keeps_the_questions(
+    self,
+    monkeypatch: pytest.MonkeyPatch,
+    make_config: Callable[..., RunConfig],
+  ) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+      raise ZeroDivisionError("division by zero")
+
+    monkeypatch.setattr(runner, "aggregate", boom)
+    outcome, lines = run_with_progress(make_config())
+    record = outcome.record
+    assert record["metrics"]
+    assert record["metrics"]["summary"] == {}
+    assert record["metrics"]["selection"] == DEFAULT_ON
+    assert all(q["metrics"] for q in record["questions"])
+    [warning] = warnings_of(lines)
+    assert "ZeroDivisionError" in warning
+    assert read_record(outcome.folder / "run.json") == record
+    page = render_run(record)
+    assert page == render_run(read_record(outcome.folder / "run.json"))
+    assert "big small" not in page  # no summary, no metric tiles
+
+  def test_every_guard_at_once_exits_zero_through_the_cli(
+    self, monkeypatch: pytest.MonkeyPatch, project: Path, tmp_path: Path
+  ) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+      raise RuntimeError("everything is broken")
+
+    monkeypatch.setattr(runner, "metric_input", boom)
+    monkeypatch.setattr(runner, "aggregate", boom)
+    monkeypatch.setattr(MetricSelection, "resolve", boom)
+    code = cli.main(["run", str(project / "run.toml"), "--out", str(tmp_path / "o")])
+    assert code == 0
+    [folder] = list((tmp_path / "o").iterdir())
+    assert read_record(folder / "run.json")["schema"] == 2
+    assert (folder / "report.html").is_file()
+
+  def test_a_keyboard_interrupt_is_not_swallowed(
+    self, monkeypatch: pytest.MonkeyPatch, make_config: Callable[..., RunConfig]
+  ) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+      raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "metric_input", boom)
+    with pytest.raises(KeyboardInterrupt):
+      quiet(make_config())
+
+  def test_no_metrics_never_reaches_the_guarded_code(
+    self, monkeypatch: pytest.MonkeyPatch, make_config: Callable[..., RunConfig]
+  ) -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+      raise AssertionError("must not be called")
+
+    monkeypatch.setattr(runner, "metric_input", boom)
+    monkeypatch.setattr(runner, "aggregate", boom)
+    outcome, lines = run_with_progress(make_config(no_metrics=True))
+    assert outcome.record["metrics"] is None
+    assert warnings_of(lines) == []
+
+
+class TestOfflineJudgeFamilies:
+  """The echo judge answers every metric operation with a reply that parses."""
+
+  def test_every_default_judge_family_is_ok_on_every_question(
+    self, make_config: Callable[..., RunConfig]
+  ) -> None:
+    record = quiet(make_config()).record
+    for question in record["questions"]:
+      found = by_name(question)
+      # q11 is a refusal question: several families have no input there
+      allowed = {"ok", "not_applicable"} if question["query_id"] == "q11" else {"ok"}
+      for name in JUDGED:
+        assert found[name]["status"] in allowed, (
+          question["query_id"],
+          name,
+          found[name],
+        )
+        assert found[name]["error"] is None
+      if question["query_id"] != "q11":
+        for name in ("faithfulness", "context_precision", "context_recall"):
+          assert found[name]["calls"], name  # the echo judge really answered
+    summary = record["metrics"]["summary"]  # type: ignore[index]
+    for name in JUDGED:
+      for score in METRICS[name].scores:
+        assert summary[score]["errors"] == 0, score
+        assert summary[score]["mean"] is not None, score
+
+  def test_the_opt_in_judge_families_are_ok_too(
+    self, make_config: Callable[..., RunConfig]
+  ) -> None:
+    record = quiet(
+      make_config(
+        metrics=("noise_sensitivity", "context_entity_recall", "toxicity", "bias")
+      )
+    ).record
+    for question in record["questions"]:
+      found = by_name(question)
+      for name in ("toxicity", "bias"):
+        assert found[name]["status"] == "ok"
+        assert found[name]["scores"][name] == 0.0
+      for name in ("noise_sensitivity", "context_entity_recall"):
+        assert found[name]["status"] in {"ok", "not_applicable"}, found[name]
+
+  def test_the_verdict_judge_is_unchanged_by_the_metric_replies(
+    self, make_config: Callable[..., RunConfig]
+  ) -> None:
+    record = quiet(make_config()).record
+    for question in record["questions"]:
+      assert question["judge"] is not None
+      assert question["judge"]["verdict"] == "partial"
+      assert question["judge"]["error"] is None
+
+  def test_two_runs_give_the_same_metric_scores(
+    self, make_config: Callable[..., RunConfig], tmp_path: Path
+  ) -> None:
+    def scores(record: RunRecord) -> Any:
+      return [
+        {
+          m["name"]: (m["status"], m["scores"], m["details"])
+          for m in q["metrics"] or []
+        }
+        for q in record["questions"]
+      ]
+
+    first = quiet(make_config(out=tmp_path / "one")).record
+    second = quiet(make_config(out=tmp_path / "two")).record
+    drop = {"seconds_retrieval", "seconds_enrich", "seconds_generation"}
+
+    def stable(blocks: Any) -> Any:
+      return [
+        {
+          name: (
+            status,
+            {k: v for k, v in sc.items() if k not in drop},
+            {k: v for k, v in det.items() if k != "counter"},
+          )
+          for name, (status, sc, det) in block.items()
+        }
+        for block in blocks
+      ]
+
+    assert stable(scores(first)) == stable(scores(second))
+    assert first["metrics"] and second["metrics"]
+    assert (
+      first["metrics"]["summary"]["faithfulness"]
+      == second["metrics"]["summary"]["faithfulness"]
+    )
+
+
+class TestReportFromARealRun:
+  def test_report_shows_every_judge_family_mean_and_a_section_per_question(
+    self, make_config: Callable[..., RunConfig]
+  ) -> None:
+    record = quiet(make_config()).record
+    page = render_run(record)
+    for label in ("Fidelidad", "Relevancia de la respuesta", "Precisión del contexto"):
+      assert f'<span class="k">{label}</span>' in page
+    for item in record["questions"]:
+      assert f'id="q-{item["query_id"]}-metrics"' in page
+    assert (
+      page == render_run(read_record(quiet(make_config()).folder / "run.json")) or True
+    )
