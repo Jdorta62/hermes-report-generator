@@ -50,6 +50,26 @@ from hermes_report.providers import ProviderError
 from hermes_report.questions import Question
 
 COUNTER = CharRatioTokenCounter(4)
+OPTIONAL_NAMES = (
+  "bleu",
+  "rouge_l",
+  "noise_sensitivity",
+  "context_entity_recall",
+  "toxicity",
+  "bias",
+)
+DEFAULT_ON_NAMES = (
+  "doc_retrieval",
+  "evidence_retrieval",
+  "refusal",
+  "cost",
+  "faithfulness",
+  "answer_relevance",
+  "context_precision",
+  "context_recall",
+  "answer_correctness",
+  "citations",
+)
 JUDGED_NAMES = (
   "faithfulness",
   "answer_relevance",
@@ -431,6 +451,7 @@ class TestSelection:
       "context_recall",
       "answer_correctness",
       "citations",
+      *OPTIONAL_NAMES,
     ]
     for key, metric in METRICS.items():
       assert metric.name == key
@@ -441,13 +462,13 @@ class TestSelection:
 
   def test_every_metric_honours_the_contract(self) -> None:
     for metric in METRICS.values():
-      assert metric.default_enabled is True
+      assert metric.default_enabled is (metric.name not in OPTIONAL_NAMES)
       assert len(set(metric.scores)) == len(metric.scores) > 0
       assert metric.requires <= set(INPUT_FIELDS)
       assert metric.needs <= {"judge", "embedder"}
 
   def test_default_runs_every_default_on_family_in_order(self) -> None:
-    assert [m.name for m in MetricSelection().resolve()] == list(METRICS)
+    assert [m.name for m in MetricSelection().resolve()] == list(DEFAULT_ON_NAMES)
 
   def test_disabled_runs_nothing(self) -> None:
     assert MetricSelection(enabled=False).resolve() == ()
@@ -461,14 +482,14 @@ class TestSelection:
   def test_exclude_a_judged_family(self) -> None:
     names = [m.name for m in MetricSelection(exclude=("citations",)).resolve()]
     assert "citations" not in names
-    assert names == [n for n in METRICS if n != "citations"]
+    assert names == [n for n in DEFAULT_ON_NAMES if n != "citations"]
 
   def test_exclude_everything_is_empty(self) -> None:
     assert MetricSelection(exclude=tuple(METRICS)).resolve() == ()
 
   def test_include_of_a_default_on_family_is_a_no_op(self) -> None:
     assert [m.name for m in MetricSelection(include=("cost",)).resolve()] == list(
-      METRICS
+      DEFAULT_ON_NAMES
     )
 
   def test_exclude_wins_over_include(self) -> None:
@@ -1110,9 +1131,10 @@ class TestEvaluateMetrics:
       evidence=("Tajo", "Lisboa"),
       seconds={"retrieval": 0.1},
     )
-    results = evaluate_metrics(item, MetricSelection().resolve(), SERVICES)
-    assert [r.name for r in results] == list(METRICS)
-    for result, metric in zip(results, METRICS.values(), strict=True):
+    selected = MetricSelection().resolve()
+    results = evaluate_metrics(item, selected, SERVICES)
+    assert [r.name for r in results] == list(DEFAULT_ON_NAMES)
+    for result, metric in zip(results, selected, strict=True):
       # No judge or embedder in SERVICES: the judged families are skipped.
       assert result.status == ("skipped" if metric.name in JUDGED_NAMES else "ok")
       if result.status == "ok":
@@ -1134,6 +1156,7 @@ class TestEvaluateMetrics:
       "context_recall": "not_applicable",
       "answer_correctness": "not_applicable",
       "citations": "not_applicable",
+      **dict.fromkeys(OPTIONAL_NAMES, "not_applicable"),
     }
 
 

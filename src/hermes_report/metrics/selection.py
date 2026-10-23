@@ -22,6 +22,14 @@ from hermes_report.metrics.judged import (
   ContextRecall,
   Faithfulness,
 )
+from hermes_report.metrics.optional import (
+  Bias,
+  Bleu,
+  ContextEntityRecall,
+  NoiseSensitivity,
+  RougeL,
+  Toxicity,
+)
 
 __all__ = ["METRICS", "MetricSelection", "MetricSelectionError"]
 
@@ -41,6 +49,12 @@ METRICS: Final[Mapping[str, Metric]] = _registry(
   ContextRecall(),
   AnswerCorrectness(),
   Citations(),
+  Bleu(),
+  RougeL(),
+  NoiseSensitivity(),
+  ContextEntityRecall(),
+  Toxicity(),
+  Bias(),
 )
 
 

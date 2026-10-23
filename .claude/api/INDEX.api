@@ -17,6 +17,7 @@
 @mod hermes_report.metrics.deterministic :: Deterministic metric families: document and evidence retrieval, refusal and cost -> hermes_report/metrics/deterministic.api
 @mod hermes_report.metrics.judge :: Judge operations of one question, memoised, with every call logged -> hermes_report/metrics/judge.api
 @mod hermes_report.metrics.judged :: Judge-based metric families: the RAG triad, answer correctness and citations -> hermes_report/metrics/judged.api
+@mod hermes_report.metrics.optional :: Opt-in metric families: BLEU, ROUGE-L, noise, entities, toxicity and bias -> hermes_report/metrics/optional.api
 @mod hermes_report.metrics.prompts :: Judge prompts (in Spanish) and strict validators of the JSON replies -> hermes_report/metrics/prompts.api
 @mod hermes_report.metrics.runner :: Run metric families over one question and aggregate the scores of a run -> hermes_report/metrics/runner.api
 @mod hermes_report.metrics.selection :: Metric registry and the selection of the families that run -> hermes_report/metrics/selection.api
